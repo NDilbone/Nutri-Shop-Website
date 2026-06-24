@@ -11,14 +11,12 @@ const SNAPSHOT = { basis: "100g", nutrients: {} };
 let userA: SupabaseClient;
 let userB: SupabaseClient;
 let userAId: string;
-let userBId: string;
 
 describe.skipIf(!HAS_SUPABASE_TEST_ENV)("logged_foods RLS isolation", () => {
   beforeAll(async () => {
     userA = await makeUser("logger-a@example.com", "LoggerA-pw-123!");
     userB = await makeUser("logger-b@example.com", "LoggerB-pw-123!");
     userAId = (await userA.auth.getUser()).data.user!.id;
-    userBId = (await userB.auth.getUser()).data.user!.id;
   });
 
   it("a user can insert and read their OWN entry", async () => {

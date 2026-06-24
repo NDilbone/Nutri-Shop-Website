@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { NormalizedFood } from "@/lib/fdc/cache";
 import type { Meal } from "@/lib/nutrition/types";
 import { MEALS } from "@/lib/nutrition/types";
@@ -31,12 +31,17 @@ export function QuickAddSheet({
   const [value, setValue] = useState<string>(String(initialGrams));
   const [pending, setPending] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
+  // Re-seed inputs when the sheet opens for a (possibly different) food. Done during render
+  // (React's reset-state-on-prop-change pattern), keyed on a stable string so a parent that
+  // rebuilds the `food` object each render can't cause an infinite reset loop.
+  const seedKey = `${food?.fdcId ?? ""}:${initialGrams}:${initialMeal}`;
+  const [seededKey, setSeededKey] = useState<string | null>(null);
+  if (open && seedKey !== seededKey) {
+    setSeededKey(seedKey);
     setMeal(initialMeal);
     setUnit("g");
     setValue(String(initialGrams));
-  }, [open, food, initialMeal, initialGrams]);
+  }
 
   const serving = food?.nutrition.serving;
   const grams = unit === "g"

@@ -1,15 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { addDays, todayLocal, formatDayLabel } from "@/lib/date";
 
+const subscribe = () => () => {};
+
 export function DateNav({ date }: { date: string }) {
   const router = useRouter();
-  // Anchor "Today/Yesterday" on the CLIENT's local today, set after mount to avoid an
-  // SSR/client hydration mismatch when server tz and client tz straddle a date boundary.
-  const [today, setToday] = useState<string | null>(null);
-  useEffect(() => setToday(todayLocal()), []);
+  // Client-only "today" anchor, read without an effect. SSR + the first hydration render
+  // use the null server snapshot (raw date) → no mismatch; React then re-renders with the
+  // client snapshot (local today) → friendly label.
+  const today = useSyncExternalStore(subscribe, () => todayLocal(), () => null);
   const go = (d: string) => router.push(`/today?date=${d}`);
   const label = today ? formatDayLabel(date, today) : date; // raw date until mounted, then friendly label
 
