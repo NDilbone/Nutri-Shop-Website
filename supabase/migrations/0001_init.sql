@@ -77,3 +77,13 @@ create trigger gate_signup_before_insert
 -- cannot fail with an opaque permission error.
 grant usage on schema public to supabase_auth_admin;
 grant select on public.invites to supabase_auth_admin;
+
+-- ============ role table privileges (RLS still gates row access) ============
+-- Supabase's implicit default privileges are not guaranteed across environments
+-- (e.g. a fresh local stack in CI), so grant explicitly for a portable schema.
+-- RLS remains the actual row-level control: invites has no user policy (0 rows),
+-- profiles is restricted to the owner's row.
+grant all on public.invites to service_role;
+grant all on public.profiles to service_role;
+grant select, update on public.profiles to authenticated;
+grant select on public.invites to authenticated;
