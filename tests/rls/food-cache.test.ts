@@ -43,9 +43,16 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
   });
 
   it("api_rate_limit is default-deny for an authenticated user", async () => {
+    const { data: who } = await user.auth.getUser();
+    // Seed a row via service-role (bypasses RLS) so there IS data to be blocked.
+    await admin().from("api_rate_limit").upsert({
+      user_id: who.user!.id,
+      window_start: new Date().toISOString(),
+      request_count: 1,
+    });
     const { data, error } = await user.from("api_rate_limit").select("user_id");
-    expect(error).toBeNull();
-    expect(data ?? []).toHaveLength(0);
+    expect(error).toBeNull();            // Supabase RLS denies silently (no error)
+    expect(data ?? []).toHaveLength(0);  // user cannot see even their own seeded row
   });
 
   it("check_and_increment_rate allows up to the limit, then blocks", async () => {
