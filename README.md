@@ -28,6 +28,16 @@ Both require a signed-in session and apply a per-user request throttle. Set `FDC
 
 Data source: **USDA FoodData Central** (public domain, CC0 1.0).
 
+## Tracker (Phase 2)
+
+The macro/micro tracker UI, built on the Phase 1 food API. Phone-first, with a bottom tab bar.
+
+- `/today?date=<YYYY-MM-DD>` — day view: entries grouped by meal with per-meal subtotals, headline calories + protein/carbs/fat, and a collapsible full-nutrition panel (all 14 nutrients; `*` marks days where a food didn't report a nutrient). Defaults to the local current day; navigate days with the date control.
+- `/add` — search USDA foods and log an entry through a quick-add sheet (amount in grams or servings, assigned to a meal). Reached from the tab bar's “+”.
+- `/account` — profile and sign out.
+
+Logged entries live in `logged_foods` (per-user, Row Level Security). Each row **snapshots** the food's per-100g nutrition at log time, so a logged day stays accurate even if the upstream USDA data later changes. The former `/dashboard` route is now `/today`.
+
 ## Database migrations
 Migrations live in `supabase/migrations/`. On merge to `main`, the **Apply DB migrations**
 workflow (`.github/workflows/db-migrate.yml`) runs `supabase db push` against the production
