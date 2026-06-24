@@ -23,7 +23,7 @@ export async function loginAction(_prev: AuthState, formData: FormData): Promise
   if (error) return { error: "Invalid login." }; // do not leak which field failed
 
   revalidatePath("/", "layout"); // re-render cached layouts with the new auth state
-  redirect("/dashboard");
+  redirect("/today");
 }
 
 export async function signupAction(_prev: AuthState, formData: FormData): Promise<AuthState> {
