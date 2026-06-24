@@ -1,0 +1,71 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5  # verify latest stable + SHA-pin at setup time
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+      # Guard: server-only secret must never be referenced from app/ code.
+      - name: Guard service-role key out of app/
+        run: |
+          if grep -rn "SERVICE_ROLE" app/ ; then
+            echo "::error::service-role reference found in app/ — keep it in lib/"; exit 1
+          fi
+
+      - run: pnpm build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: build-time-placeholder
+          NEXT_PUBLIC_SITE_URL: http://localhost:3000
+          SUPABASE_SERVICE_ROLE_KEY: build-time-placeholder
+
+      # Guard: the (placeholder) service-role value must not be inlined in the bundle.
+      - name: Guard secret out of client bundle
+        run: |
+          if grep -rn "build-time-placeholder" .next/static 2>/dev/null ; then
+            echo "::error::a server env value leaked into the client bundle"; exit 1
+          fi
+
+      - name: Start Supabase (local) for RLS + invite-gate tests
+        run: supabase start
+
+      - name: Export local Supabase creds (anchored parse; values may contain '=')
+        run: |
+          supabase status -o env > /tmp/supa.env
+          API_URL=$(grep '^API_URL=' /tmp/supa.env | cut -d= -f2- | tr -d '"')
+          ANON=$(grep '^ANON_KEY=' /tmp/supa.env | cut -d= -f2- | tr -d '"')
+          SERVICE=$(grep '^SERVICE_ROLE_KEY=' /tmp/supa.env | cut -d= -f2- | tr -d '"')
+          test -n "$API_URL" && test -n "$ANON" && test -n "$SERVICE" \
+            || { echo "::error::failed to parse Supabase creds"; cat /tmp/supa.env; exit 1; }
+          {
+            echo "SUPABASE_TEST_URL=$API_URL"
+            echo "SUPABASE_TEST_ANON_KEY=$ANON"
+            echo "SUPABASE_TEST_SERVICE_ROLE_KEY=$SERVICE"
+          } >> "$GITHUB_ENV"
+
+      - run: pnpm test
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: build-time-placeholder
+          NEXT_PUBLIC_SITE_URL: http://localhost:3000
+          SUPABASE_SERVICE_ROLE_KEY: build-time-placeholder
+          REQUIRE_SUPABASE_TESTS: "1"
