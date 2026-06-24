@@ -16,5 +16,17 @@ Next.js 16 (App Router) · Supabase (Postgres + Auth, Row Level Security) · Typ
 - `pnpm dev` / `pnpm build` / `pnpm start`
 - `pnpm lint` · `pnpm typecheck` · `pnpm test`
 
+## Food API (Phase 1)
+
+Authenticated JSON endpoints backed by USDA FoodData Central (FDC), cached and rate-limited.
+
+- `GET /api/foods?q=<query>&dataType=<csv>&page=<n>` — search (defaults to Branded + Foundation + SR Legacy).
+- `GET /api/foods/{fdcId}` — normalized nutrient detail for one food.
+
+Both require a signed-in session and apply a per-user request throttle. Set `FDC_API_KEY`
+(see `.env.example`) for live data; without it the endpoints return `503`.
+
+Data source: **USDA FoodData Central** (public domain, CC0 1.0).
+
 ## Security
 Secrets live only in `.env` (gitignored) and Vercel env settings — never in the repo. Auth email links are built from `NEXT_PUBLIC_SITE_URL` (a trusted constant), and Supabase's redirect allowlist must list only your real origins (no wildcards). See `SECURITY.md`.

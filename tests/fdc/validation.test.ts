@@ -43,7 +43,7 @@ describe("FDC response schemas (lenient)", () => {
       foods: [{ fdcId: 1, description: "A", dataType: "Branded",
                 brandOwner: "X", gtinUpc: "000", surprise: true }],
     });
-    expect(r.foods[0].fdcId).toBe(1);
+    expect(r.foods[0]!.fdcId).toBe(1);
     expect((r.foods[0] as { surprise?: boolean }).surprise).toBe(true);
   });
   it("parses a detail response exposing foodNutrients[].nutrient.id", () => {
@@ -51,6 +51,6 @@ describe("FDC response schemas (lenient)", () => {
       fdcId: 5, description: "B", dataType: "Foundation",
       foodNutrients: [{ amount: 10, nutrient: { id: 1003, number: "203", unitName: "G" } }],
     });
-    expect(r.foodNutrients[0].nutrient.id).toBe(1003);
+    expect(r.foodNutrients[0]!.nutrient.id).toBe(1003);
   });
 });

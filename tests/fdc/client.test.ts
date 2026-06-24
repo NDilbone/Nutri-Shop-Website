@@ -24,8 +24,8 @@ describe("FDC client", () => {
     const { searchFoods } = await import("@/lib/fdc/client");
 
     const res = await searchFoods({ query: "egg", dataType: ["Branded", "Foundation"], pageNumber: 2 });
-    expect(res.foods[0].fdcId).toBe(7);
-    const url = new URL(fetchMock.mock.calls[0][0]);
+    expect(res.foods[0]!.fdcId).toBe(7);
+    const url = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(url.pathname).toBe("/fdc/v1/foods/search");
     expect(url.searchParams.get("api_key")).toBe("test-key");
     expect(url.searchParams.get("dataType")).toBe("Branded,Foundation");
@@ -40,7 +40,7 @@ describe("FDC client", () => {
     const { getFoodDetail } = await import("@/lib/fdc/client");
 
     await getFoodDetail(5);
-    const url = new URL(fetchMock.mock.calls[0][0]);
+    const url = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(url.pathname).toBe("/fdc/v1/food/5");
     expect(url.searchParams.get("format")).toBe("full");
   });
