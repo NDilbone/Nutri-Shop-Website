@@ -1,0 +1,68 @@
+name: RLS Integration Tests
+
+# The per-push CI workflow runs unit/boundary tests only. This workflow spins up
+# a real local Supabase stack and runs the RLS isolation + invite-gate guardrail
+# tests fail-closed — proving cross-user data cannot leak. Kept separate because
+# the Supabase stack (CLI + Docker) is slow to provision.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1" # weekly, Monday 07:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+      - "tests/rls/**"
+      - "tests/auth/**"
+      - "lib/dal/**"
+      - "lib/supabase/**"
+      - ".github/workflows/rls.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase (applies migrations)
+        run: |
+          [ -f supabase/config.toml ] || supabase init
+          supabase start
+
+      - name: Export local Supabase creds (anchored parse; values may contain '=')
+        run: |
+          supabase status -o env > /tmp/supa.env
+          API_URL=$(grep '^API_URL=' /tmp/supa.env | cut -d= -f2- | tr -d '"')
+          ANON=$(grep '^ANON_KEY=' /tmp/supa.env | cut -d= -f2- | tr -d '"')
+          SERVICE=$(grep '^SERVICE_ROLE_KEY=' /tmp/supa.env | cut -d= -f2- | tr -d '"')
+          test -n "$API_URL" && test -n "$ANON" && test -n "$SERVICE" \
+            || { echo "::error::failed to parse Supabase creds"; cat /tmp/supa.env; exit 1; }
+          {
+            echo "SUPABASE_TEST_URL=$API_URL"
+            echo "SUPABASE_TEST_ANON_KEY=$ANON"
+            echo "SUPABASE_TEST_SERVICE_ROLE_KEY=$SERVICE"
+          } >> "$GITHUB_ENV"
+
+      - name: Run RLS + invite-gate integration tests (fail-closed)
+        run: pnpm exec vitest run tests/rls tests/auth/invite-gate.test.ts
+        env:
+          REQUIRE_SUPABASE_TESTS: "1"
+
+      - name: Stop local Supabase
+        if: always()
+        run: supabase stop || true
