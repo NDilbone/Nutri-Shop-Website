@@ -16,11 +16,9 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("invite-gate (server-enforced, real sign
   });
 
   it("ALLOWS signup for an invited email", async () => {
-    await admin().from("invites").upsert({ email: "invited@example.com" });
-    const { error } = await anonClient().auth.signUp({
-      email: "invited@example.com",
-      password: "Str0ng-pw-123!",
-    });
+    const email = `invited-${Date.now()}@example.com`;
+    await admin().from("invites").upsert({ email });
+    const { error } = await anonClient().auth.signUp({ email, password: "Str0ng-pw-123!" });
     expect(error).toBeNull();
   });
 });

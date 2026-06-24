@@ -33,8 +33,10 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("RLS per-user isolation", () => {
 
   it("a user CANNOT change another user's profile (verified by reading back as the owner)", async () => {
     await userB.from("profiles").update({ display_name: "hacked" }).eq("id", userAId);
-    const { data } = await userA.from("profiles").select("display_name").eq("id", userAId).single();
-    expect(data?.display_name ?? null).not.toBe("hacked");
+    const { data, error } = await userA.from("profiles").select("display_name").eq("id", userAId).single();
+    expect(error).toBeNull();
+    expect(data).not.toBeNull();
+    expect(data!.display_name).not.toBe("hacked");
   });
 
   it("a user CANNOT insert a row owned by another user", async () => {
@@ -43,7 +45,8 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("RLS per-user isolation", () => {
   });
 
   it("a non-owner CANNOT read the invites allowlist", async () => {
-    const { data } = await userB.from("invites").select("email");
-    expect(data ?? []).toHaveLength(0); // invites is default-deny
+    const { data, error } = await userB.from("invites").select("email");
+    expect(error).toBeNull();
+    expect(data ?? []).toHaveLength(0);
   });
 });
