@@ -28,5 +28,13 @@ Both require a signed-in session and apply a per-user request throttle. Set `FDC
 
 Data source: **USDA FoodData Central** (public domain, CC0 1.0).
 
+## Database migrations
+Migrations live in `supabase/migrations/`. On merge to `main`, the **Apply DB migrations**
+workflow (`.github/workflows/db-migrate.yml`) runs `supabase db push` against the production
+database, applying any not-yet-recorded migrations. It needs the `SUPABASE_ACCESS_TOKEN`,
+`SUPABASE_DB_PASSWORD`, and `SUPABASE_PROJECT_REF` repo secrets; add required reviewers to the
+`production` environment to gate each apply behind a manual approval. To apply locally instead:
+`supabase db push` after `supabase link`.
+
 ## Security
 Secrets live only in `.env` (gitignored) and Vercel env settings — never in the repo. Auth email links are built from `NEXT_PUBLIC_SITE_URL` (a trusted constant), and Supabase's redirect allowlist must list only your real origins (no wildcards). See `SECURITY.md`.

@@ -1,0 +1,55 @@
+name: Apply DB migrations
+
+# Applies new supabase/migrations/** to the PRODUCTION Supabase database whenever
+# they land on main. Idempotent: the Supabase CLI only runs migrations not yet
+# recorded in the remote migration history (public.supabase_migrations.schema_migrations),
+# so re-runs are safe.
+#
+# One-time setup (repo Settings -> Secrets and variables -> Actions):
+#   SUPABASE_ACCESS_TOKEN  - a personal access token (supabase.com/dashboard/account/tokens)
+#   SUPABASE_DB_PASSWORD   - the database password (Project Settings -> Database)
+#   SUPABASE_PROJECT_REF   - the project ref (from the project URL / dashboard)
+#
+# If 0001 was applied by hand (dashboard) before this workflow existed, sync the
+# remote history ONCE so db push doesn't try to re-run it:
+#   supabase link --project-ref <ref>
+#   supabase migration repair --status applied 0001
+#
+# Security: SUPABASE_DB_PASSWORD grants full DB access. This workflow runs only on
+# push to main (never fork PRs) with read-only repo permissions. To require a human
+# click before each production migration, add required reviewers to the `production`
+# environment in repo Settings -> Environments.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never let two production migration applies run at once.
+concurrency:
+  group: supabase-prod-migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Apply migrations to production
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+          supabase db push
