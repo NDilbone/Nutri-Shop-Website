@@ -21,6 +21,9 @@ describe("searchQuerySchema", () => {
   it("rejects an unknown dataType", () => {
     expect(searchQuerySchema.safeParse({ q: "x", dataType: ["Nope"] }).success).toBe(false);
   });
+  it("rejects an empty dataType array", () => {
+    expect(searchQuerySchema.safeParse({ q: "x", dataType: [] }).success).toBe(false);
+  });
 });
 
 describe("fdcIdSchema", () => {
@@ -41,6 +44,7 @@ describe("FDC response schemas (lenient)", () => {
                 brandOwner: "X", gtinUpc: "000", surprise: true }],
     });
     expect(r.foods[0].fdcId).toBe(1);
+    expect((r.foods[0] as { surprise?: boolean }).surprise).toBe(true);
   });
   it("parses a detail response exposing foodNutrients[].nutrient.id", () => {
     const r = fdcDetailResponseSchema.parse({
