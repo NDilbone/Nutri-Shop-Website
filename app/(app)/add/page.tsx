@@ -1,3 +1,10 @@
-export default function AddPage() {
-  return <main className="p-4"><h1 className="text-xl font-semibold">Add food</h1><p className="mt-2 text-muted">Coming next.</p></main>;
+import type { Meal } from "@/lib/nutrition/types";
+import { MEALS } from "@/lib/nutrition/types";
+import { AddView } from "./AddView";
+
+export default async function AddPage({ searchParams }: { searchParams: Promise<{ date?: string; meal?: string }> }) {
+  const sp = await searchParams;
+  const date = sp.date && /^\d{4}-\d{2}-\d{2}$/.test(sp.date) ? sp.date : "";
+  const presetMeal: Meal = MEALS.includes(sp.meal as Meal) ? (sp.meal as Meal) : "lunch";
+  return <AddView date={date} presetMeal={presetMeal} />;
 }
