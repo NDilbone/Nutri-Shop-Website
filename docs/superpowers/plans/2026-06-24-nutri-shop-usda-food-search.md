@@ -666,13 +666,15 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
     expect(data ?? []).toHaveLength(0);
   });
 
-  it("api_rate_limit is default-deny for an authenticated user", async () => {
+  it("api_rate_limit is locked down — an authenticated user cannot read it at all", async () => {
     const { data: who } = await user.auth.getUser();
     await admin().from("api_rate_limit").upsert({
       user_id: who.user!.id, window_start: new Date().toISOString(), request_count: 1,
     });
     const { data, error } = await user.from("api_rate_limit").select("user_id");
-    expect(error).toBeNull();
+    // No grant to `authenticated` => hard 42501 permission denied (stronger than RLS 0-rows).
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("42501");
     expect(data ?? []).toHaveLength(0);
   });
 
