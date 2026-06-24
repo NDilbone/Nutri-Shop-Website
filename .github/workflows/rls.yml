@@ -58,8 +58,18 @@ jobs:
             echo "SUPABASE_TEST_SERVICE_ROLE_KEY=$SERVICE"
           } >> "$GITHUB_ENV"
 
-      - name: Run RLS + invite-gate integration tests (fail-closed)
-        run: pnpm exec vitest run tests/rls tests/auth/invite-gate.test.ts
+      - name: Wait for the local auth service to be ready
+        run: |
+          for i in $(seq 1 20); do
+            curl -sf -o /dev/null "http://127.0.0.1:54321/auth/v1/health" && { echo "auth ready"; exit 0; }
+            sleep 2
+          done
+          echo "::warning::auth health not confirmed after 40s; proceeding anyway"
+
+      # --no-file-parallelism serializes the suites so concurrent admin.createUser
+      # calls don't overwhelm the freshly-started local GoTrue (AuthRetryableFetchError).
+      - name: Run RLS + invite-gate integration tests (fail-closed, serialized)
+        run: pnpm exec vitest run tests/rls tests/auth/invite-gate.test.ts --no-file-parallelism
         env:
           REQUIRE_SUPABASE_TESTS: "1"
 
