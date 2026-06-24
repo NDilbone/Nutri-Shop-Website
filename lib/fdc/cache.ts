@@ -94,6 +94,7 @@ export async function getFoodDetailCached(
       gtin_upc: detail.gtinUpc ?? null,
       raw: detail,
       nutrition: food.nutrition,
+      fetched_at: new Date().toISOString(),
     });
     return { food, stale: false };
   } catch (e) {

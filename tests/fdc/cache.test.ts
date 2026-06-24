@@ -66,7 +66,7 @@ describe("getFoodDetailCached", () => {
     const { food } = await getFoodDetailCached(9);
     expect(food.nutrition.nutrients.energyKcal).toEqual({ amount: 100, unit: "kcal" });
     expect(adminFrom).toHaveBeenCalledWith("food_cache");
-    expect(adminUpsert).toHaveBeenCalledWith(expect.objectContaining({ fdc_id: 9 }));
+    expect(adminUpsert).toHaveBeenCalledWith(expect.objectContaining({ fdc_id: 9, fetched_at: expect.any(String) }));
   });
 
   it("serves a stale row when FDC is rate-limited", async () => {
