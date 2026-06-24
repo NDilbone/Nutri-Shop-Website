@@ -16,6 +16,7 @@ export function Segmented<T extends string | number>({
             key={String(o.value)}
             type="button"
             disabled={o.disabled}
+            aria-pressed={on}
             onClick={() => onChange(o.value)}
             className={`rounded-md border px-3 py-1.5 text-xs transition disabled:opacity-40 ${
               on ? "border-brand bg-[#16341f] text-protein" : "border-border bg-surface text-muted"
