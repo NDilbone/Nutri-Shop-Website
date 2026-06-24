@@ -34,6 +34,25 @@ describe("normalizeNutrition", () => {
     expect(out.nutrients.energyKcal).toEqual({ amount: 52, unit: "kcal" });
   });
 
+  it("uses Atwater Specific (2048) as second fallback when 1008 and 2047 are absent", () => {
+    const out = normalizeNutrition({
+      dataType: "Foundation",
+      foodNutrients: [{ id: 2048, amount: 30, unitName: "KCAL" }],
+    });
+    expect(out.nutrients.energyKcal).toEqual({ amount: 30, unit: "kcal" });
+  });
+
+  it("prefers primary energy id 1008 over Atwater fallback regardless of array order", () => {
+    const out = normalizeNutrition({
+      dataType: "Branded",
+      foodNutrients: [
+        { id: 2047, amount: 52, unitName: "KCAL" },
+        { id: 1008, amount: 99, unitName: "KCAL" },
+      ],
+    });
+    expect(out.nutrients.energyKcal).toEqual({ amount: 99, unit: "kcal" });
+  });
+
   it("prefers vitamin D µg (1114); falls back to 1110 as IU", () => {
     const ug = normalizeNutrition({ dataType: "Foundation",
       foodNutrients: [{ id: 1114, amount: 2, unitName: "UG" }] });
