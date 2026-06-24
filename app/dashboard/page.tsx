@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 export default async function DashboardPage() {
   const { userId } = await requireUser(); // Gate 2 — redirects if not authed
   const supabase = await createClient();
-  // Gate 4 proves itself: RLS lets us read only our own profile row.
+  // Self-keyed read: RLS (Gate 4) enforces ownership. assertOwnership() in the DAL is the reserved guard for future foreign-keyed / multi-row reads.
   const { data: profile } = await supabase
     .from("profiles")
     .select("id, display_name")
@@ -12,7 +12,7 @@ export default async function DashboardPage() {
     .single();
 
   return (
-    <main style={{ maxWidth: 640, margin: "8vh auto", padding: 24 }}>
+    <main className="max-w-[640px] mx-auto my-[8vh] p-6">
       <h1>Dashboard</h1>
       <p>Signed in. Your user id: <code>{userId}</code></p>
       <p>Profile loaded via RLS: <code>{profile?.id ?? "none"}</code></p>
