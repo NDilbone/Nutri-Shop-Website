@@ -42,6 +42,19 @@ describe("logFood", () => {
     await expect(logFood({ fdcId: 5, amountGrams: 1, meal: "snack", loggedOn: "2026-06-24" })).rejects.toThrow();
     expect(getFoodDetailCached).not.toHaveBeenCalled();
   });
+
+  it("throws when insert returns data: null, error: null", async () => {
+    verifySession.mockResolvedValue({ userId: "u1" });
+    getFoodDetailCached.mockResolvedValue({ food: { fdcId: 5, description: "Egg", dataType: "Foundation", nutrition: NUTR }, stale: false });
+    const insertCapture = vi.fn().mockReturnValue({
+      select: () => ({ single: () => Promise.resolve({ data: null, error: null }) }),
+    });
+    from.mockReturnValue({ insert: insertCapture });
+
+    const { logFood } = await import("@/lib/dal/logged-foods");
+    await expect(logFood({ fdcId: 5, amountGrams: 150, meal: "lunch", loggedOn: "2026-06-24" }))
+      .rejects.toThrow(/no row returned/);
+  });
 });
 
 describe("editLog", () => {
@@ -54,6 +67,13 @@ describe("editLog", () => {
     await editLog({ id: "row1", amountGrams: 80 });
     expect(update).toHaveBeenCalledWith({ amount_grams: 80 });
     expect(eq).toHaveBeenCalledWith("id", "row1");
+  });
+
+  it("does not call supabase when no fields are provided", async () => {
+    verifySession.mockResolvedValue({ userId: "u1" });
+    const { editLog } = await import("@/lib/dal/logged-foods");
+    await editLog({ id: "00000000-0000-0000-0000-000000000000" });
+    expect(from).not.toHaveBeenCalled();
   });
 });
 

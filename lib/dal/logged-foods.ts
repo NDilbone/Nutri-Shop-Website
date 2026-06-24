@@ -28,8 +28,8 @@ export async function logFood(input: AddFoodInput): Promise<{ id: string }> {
     })
     .select("id")
     .single();
-  if (error) throw new Error(`logFood insert failed: ${error.message}`);
-  return { id: data.id as string };
+  if (error || !data) throw new Error(`logFood insert failed: ${error?.message ?? "no row returned"}`);
+  return { id: data.id };
 }
 
 /** Edit amount and/or meal of an existing entry. Cannot change nutrition or fdc_id. */
@@ -39,6 +39,7 @@ export async function editLog(input: EditFoodInput): Promise<void> {
   const patch: { amount_grams?: number; meal?: Meal } = {};
   if (input.amountGrams !== undefined) patch.amount_grams = input.amountGrams;
   if (input.meal !== undefined) patch.meal = input.meal;
+  if (Object.keys(patch).length === 0) return;
   const supabase = await createClient();
   const { error } = await supabase.from("logged_foods").update(patch).eq("id", input.id);
   if (error) throw new Error(`editLog failed: ${error.message}`);
