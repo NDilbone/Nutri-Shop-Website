@@ -26,7 +26,8 @@ export function admin(): SupabaseClient {
 /** Invite + create a confirmed user, then return an anon client signed in as them. */
 export async function makeUser(email: string, password: string): Promise<SupabaseClient> {
   const a = admin();
-  await a.from("invites").upsert({ email }); // allowlist so the gate permits creation
+  const { error: invErr } = await a.from("invites").upsert({ email }); // allowlist so the gate permits creation
+  if (invErr) throw new Error(`invite upsert failed for ${email}: ${invErr.message} (code=${invErr.code ?? "?"})`);
   const { error: createErr } = await a.auth.admin.createUser({
     email,
     password,
