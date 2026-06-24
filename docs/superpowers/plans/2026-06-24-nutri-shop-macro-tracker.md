@@ -124,7 +124,7 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("logged_foods RLS isolation", () => {
     const { data, error } = await userA.from("logged_foods")
       .select("id").eq("user_id", userAId).eq("logged_on", "2026-06-24");
     expect(error).toBeNull();
-    expect((data ?? []).length).toBeGreaterTplaceholderHANZERO; // replaced below
+    expect((data ?? []).length).toBeGreaterThan(0);
   });
 
   it("a user CANNOT insert an entry owned by another user", async () => {
@@ -160,8 +160,6 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("logged_foods RLS isolation", () => {
   });
 });
 ```
-
-Fix the deliberate typo from Step 2: replace `expect((data ?? []).length).toBeGreaterTplaceholderHANZERO;` with `expect((data ?? []).length).toBeGreaterThan(0);`. (Sentinel so you don't skim past it — the line must read `toBeGreaterThan(0)`.)
 
 - [ ] **Step 3: Run the test (verify it self-skips offline)**
 
@@ -2154,7 +2152,7 @@ Expected: CI, CodeQL, RLS Integration Tests all green. The RLS workflow runs `lo
 - §11 risks (snapshot, forged nutrition, tz, ml→g, CSP, route rename, scope, grants) → addressed across Tasks 1/5/7/8 + constraints. ✓
 - §12 success criteria → all reachable by Task 12. ✓
 
-**2. Placeholder scan:** No "TBD/TODO". The Task 1 test contains an intentional sentinel (`toBeGreaterTplaceholderHANZERO`) with an explicit fix step — verify it's corrected to `toBeGreaterThan(0)`. No other placeholders.
+**2. Placeholder scan:** No "TBD/TODO" and no remaining sentinels. No placeholders.
 
 **4. Verification pass (post-write):** An adversarial 6-dimension review (zod/TS, Next/React, Supabase/SQL, Phase-1 contract, CSP/security, coherence) ran against the real codebase. zod/TS and CSP/security came back clean. Folded-in fixes: Task 5 `getDay` fixture now carries a full 14-key snapshot (a sparse one threw at runtime in `sumTotals`); Task 8 now also redirects `app/auth/confirm/route.ts` `/dashboard`→`/today`; Task 9 `DateNav` owns the day label (no ambiguous `formatDayLabel` dance on the page); Task 12 adds `supabase migration repair --status applied 0003` so the merge `db push` doesn't double-apply; minor unused-import and seed-date-tz cleanups; next/font/google deviation from the spec documented.
 
