@@ -62,4 +62,12 @@ describe("GET /api/foods (search)", () => {
     expect(res.status).toBe(429);
     expect(res.headers.get("retry-after")).toBe("30");
   });
+
+  it("preserves a zero Retry-After header", async () => {
+    searchFoodsCached.mockRejectedValue(new FdcError("rate_limited", 0));
+    const { GET } = await import("@/app/api/foods/route");
+    const res = await GET(req("?q=egg"));
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("0");
+  });
 });
