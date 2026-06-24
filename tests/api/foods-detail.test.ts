@@ -43,8 +43,17 @@ describe("GET /api/foods/[fdcId] (detail)", () => {
       stale: true,
     });
     const { GET } = await import("@/app/api/foods/[fdcId]/route");
-    const body = await (await GET(req, ctx("5"))).json();
+    const res = await GET(req, ctx("5"));
+    expect(res.status).toBe(200);
+    const body = await res.json();
     expect(body.stale).toBe(true);
+  });
+
+  it("429s when rate limit is exceeded", async () => {
+    enforceRateLimit.mockRejectedValue(new RateLimitError());
+    const { GET } = await import("@/app/api/foods/[fdcId]/route");
+    expect((await GET(req, ctx("5"))).status).toBe(429);
+    enforceRateLimit.mockResolvedValue(undefined);
   });
 
   it("400s on a non-numeric id", async () => {
