@@ -32,7 +32,14 @@ export async function makeUser(email: string, password: string): Promise<Supabas
     password,
     email_confirm: true, // admin API creates a pre-confirmed user
   });
-  if (createErr && !/already.*registered/i.test(createErr.message)) throw createErr;
+  if (
+    createErr &&
+    !/already.*registered|already.*exists/i.test(createErr.message) &&
+    (createErr as { status?: number }).status !== 422 &&
+    (createErr as { code?: string }).code !== "email_exists"
+  ) {
+    throw createErr;
+  }
 
   const client = anonClient();
   const { error } = await client.auth.signInWithPassword({ email, password });
