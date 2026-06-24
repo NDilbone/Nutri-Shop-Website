@@ -15,7 +15,7 @@
 - **Pinned versions (do not bump):** `next@16.2.9`, `react@19.2.7`, `zod@4.4.3`, `typescript@6.0.3`, pnpm `11.9.0`, Node `>=24`. Any new dependency must be the current latest stable.
 - **No AI attribution** anywhere durable (commits, comments, docs). Author is RegEdits.
 - **Secrets server-only:** `FDC_API_KEY` is read **only** in `lib/fdc/client.ts` via `getServerEnv()`, behind `import "server-only"`. Never `NEXT_PUBLIC_`, never in a response body, log, or the client bundle.
-- **No service-role on the request path.** No `SERVICE_ROLE` reference may appear under `app/` (CI greps for it). Privileged writes use `SECURITY DEFINER` SQL functions granted to `authenticated`.
+- **No service-role under `app/`.** No `SERVICE_ROLE` reference may appear under `app/` (CI greps for it). The service-role client lives only in `lib/supabase/admin.ts`, used solely for the public `food_cache` write (shared reference data, no per-user rows → no IDOR). `food_cache` has **no** authenticated write path. The per-user throttle is a `SECURITY DEFINER` function with a **hard-coded** limit/window (no client-tunable params). *(Both points are security-review findings — see the spec §3/§10.)*
 - **RLS default-deny.** New tables enable RLS; grant the minimum; mirror `0001_init.sql` conventions (`(select auth.uid())`, explicit grants, `security definer set search_path = ''`).
 - **Missing nutrient ⇒ `null`, never `0`.**
 - **TDD, DRY, YAGNI, frequent commits.** Per-push CI runs `pnpm lint && pnpm typecheck && pnpm build && pnpm test`; RLS integration tests run in `.github/workflows/rls.yml` against a real local Supabase stack and self-skip without `SUPABASE_TEST_*` env.
@@ -30,11 +30,12 @@
 | `lib/validation/fdc.ts` | **Create.** Zod: route input (`searchQuerySchema`, `fdcIdSchema`) + lenient FDC response schemas + inferred types. |
 | `lib/fdc/client.ts` | **Create.** server-only HTTP client (`searchFoods`, `getFoodDetail`) + `FdcError`. Sole reader of `FDC_API_KEY`. |
 | `lib/fdc/http.ts` | **Create.** Route helpers `jsonError()` + `mapFdcError()` (DRY across both routes). |
-| `lib/fdc/cache.ts` | **Create.** `searchFoodsCached()` (L1) + `getFoodDetailCached()` (L2→L1→normalize→upsert, stale-on-429). |
-| `lib/dal/rate-limit.ts` | **Create.** `enforceRateLimit()` → `check_and_increment_rate` RPC. |
+| `lib/fdc/cache.ts` | **Create.** `searchFoodsCached()` (L1) + `getFoodDetailCached()` (L2 authed-read → L1 → normalize → service-role write, stale-on-429). |
+| `lib/supabase/admin.ts` | **Create.** Server-only service-role client; used only for the `food_cache` write. Never imported from `app/`. |
+| `lib/dal/rate-limit.ts` | **Create.** `enforceRateLimit()` → `check_and_increment_rate()` RPC (no args). |
 | `app/api/foods/route.ts` | **Replace** the 501 stub: GET search. |
 | `app/api/foods/[fdcId]/route.ts` | **Create.** GET detail. |
-| `supabase/migrations/0002_food_cache.sql` | **Create.** `food_cache` + `api_rate_limit` tables, `upsert_food_cache` + `check_and_increment_rate` functions, RLS + grants. |
+| `supabase/migrations/0002_food_cache.sql` | **Create.** `food_cache` + `api_rate_limit` tables, `check_and_increment_rate()` function (hard-coded limit/window), RLS + grants. No authenticated write fn. |
 | `tests/fdc/nutrients.test.ts` | **Create.** Normalizer unit tests. |
 | `tests/fdc/client.test.ts` | **Create.** Client unit tests (mock `fetch`). |
 | `tests/fdc/cache.test.ts` | **Create.** Cache unit tests (mock client + supabase + `next/cache`). |
@@ -612,11 +613,11 @@ git commit -m "feat: add server-only FDC HTTP client with typed errors"
 - Test: `tests/rls/food-cache.test.ts`
 
 **Interfaces:**
-- Produces (callable via Supabase RPC):
-  - `upsert_food_cache(p_fdc_id bigint, p_data_type text, p_description text, p_brand_owner text, p_gtin_upc text, p_raw jsonb, p_nutrition jsonb) returns void`
-  - `check_and_increment_rate(p_limit int, p_window_seconds int) returns boolean`
-  - Table `public.food_cache(fdc_id, data_type, description, brand_owner, gtin_upc, raw, nutrition, fetched_at)` — authenticated SELECT only.
+- Produces:
+  - `check_and_increment_rate() returns boolean` — SECURITY DEFINER; limit + window hard-coded at 60/60s (NOT client args); granted to `authenticated`.
+  - Table `public.food_cache(fdc_id, data_type, description, brand_owner, gtin_upc, raw, nutrition, fetched_at)` — authenticated SELECT only; **no authenticated write path** (the server writes via the service-role client in Task 6).
   - Table `public.api_rate_limit(user_id, window_start, request_count)` — default-deny.
+  - (There is deliberately NO `upsert_food_cache` RPC — a security review found a DEFINER upsert granted to `authenticated` allowed cache poisoning; writes are service-role-only.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -654,40 +655,51 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
     expect(error).not.toBeNull();
   });
 
-  it("upsert_food_cache RPC lets an authed user populate the cache", async () => {
+  it("the cache-poisoning RPC is gone — authed user cannot write food_cache via upsert_food_cache", async () => {
     const { error } = await user.rpc("upsert_food_cache", {
-      p_fdc_id: 999003, p_data_type: "Foundation", p_description: "RPC Food",
+      p_fdc_id: 999003, p_data_type: "Foundation", p_description: "junk",
       p_brand_owner: null, p_gtin_upc: null, p_raw: {},
       p_nutrition: { basis: "100g", nutrients: {} },
     });
-    expect(error).toBeNull();
-    const { data } = await user.from("food_cache").select("description").eq("fdc_id", 999003).single();
-    expect(data!.description).toBe("RPC Food");
+    expect(error).not.toBeNull();
+    const { data } = await admin().from("food_cache").select("fdc_id").eq("fdc_id", 999003);
+    expect(data ?? []).toHaveLength(0);
   });
 
   it("api_rate_limit is default-deny for an authenticated user", async () => {
+    const { data: who } = await user.auth.getUser();
+    await admin().from("api_rate_limit").upsert({
+      user_id: who.user!.id, window_start: new Date().toISOString(), request_count: 1,
+    });
     const { data, error } = await user.from("api_rate_limit").select("user_id");
     expect(error).toBeNull();
     expect(data ?? []).toHaveLength(0);
   });
 
-  it("check_and_increment_rate allows up to the limit, then blocks", async () => {
-    const u = await makeUser("rate-block@example.com", "Rate-pw-123!");
-    const call = () => u.rpc("check_and_increment_rate", { p_limit: 2, p_window_seconds: 60 });
-    expect((await call()).data).toBe(true);
-    expect((await call()).data).toBe(true);
-    expect((await call()).data).toBe(false);
+  it("check_and_increment_rate cannot be called with client-controlled limit/window", async () => {
+    const u = await makeUser("rate-args@example.com", "Rate-pw-123!");
+    const { error } = await u.rpc("check_and_increment_rate", { p_limit: 999999, p_window_seconds: 0 });
+    expect(error).not.toBeNull(); // no overload accepting these parameters exists
   });
 
-  it("check_and_increment_rate resets after the window elapses", async () => {
+  it("check_and_increment_rate (hard-coded 60/60s) returns true up to the limit, then false", async () => {
+    const u = await makeUser("rate-block@example.com", "Rate-pw-123!");
+    const { data: who } = await u.auth.getUser();
+    await admin().from("api_rate_limit").upsert({
+      user_id: who.user!.id, window_start: new Date().toISOString(), request_count: 59,
+    });
+    expect((await u.rpc("check_and_increment_rate")).data).toBe(true);  // 60 <= 60
+    expect((await u.rpc("check_and_increment_rate")).data).toBe(false); // 61 > 60
+  });
+
+  it("check_and_increment_rate resets the count after the window elapses", async () => {
     const u = await makeUser("rate-reset@example.com", "Rate-pw-123!");
     const { data: who } = await u.auth.getUser();
-    await u.rpc("check_and_increment_rate", { p_limit: 1, p_window_seconds: 60 });
-    expect((await u.rpc("check_and_increment_rate", { p_limit: 1, p_window_seconds: 60 })).data).toBe(false);
-    await admin().from("api_rate_limit")
-      .update({ window_start: new Date(Date.now() - 120_000).toISOString() })
-      .eq("user_id", who.user!.id);
-    expect((await u.rpc("check_and_increment_rate", { p_limit: 1, p_window_seconds: 60 })).data).toBe(true);
+    await admin().from("api_rate_limit").upsert({
+      user_id: who.user!.id,
+      window_start: new Date(Date.now() - 120_000).toISOString(), request_count: 60,
+    });
+    expect((await u.rpc("check_and_increment_rate")).data).toBe(true); // window expired → reset to 1
   });
 });
 ```
@@ -701,7 +713,7 @@ supabase db reset --no-seed
 supabase status -o env > /tmp/supa.env   # then export SUPABASE_TEST_URL / _ANON_KEY / _SERVICE_ROLE_KEY
 pnpm exec vitest run tests/rls/food-cache.test.ts --no-file-parallelism
 ```
-Expected: FAIL — `food_cache`/`api_rate_limit` relations and the RPCs do not exist yet.
+Expected: FAIL — `food_cache`/`api_rate_limit` relations and `check_and_increment_rate` do not exist yet.
 
 > Without a local stack the suite **self-skips** (`describe.skipIf`). That is acceptable for inner-loop work; the migration is validated by `.github/workflows/rls.yml`. Run it locally at least once before opening the PR.
 
@@ -710,7 +722,7 @@ Expected: FAIL — `food_cache`/`api_rate_limit` relations and the RPCs do not e
 ```sql
 -- supabase/migrations/0002_food_cache.sql — Phase 1: FDC food cache + per-user rate limit
 
--- ============ food_cache (public CC0 reference data; authed-read, privileged-write) ============
+-- ============ food_cache (public CC0 reference data; authed-read, service-role write) ============
 create table public.food_cache (
   fdc_id      bigint primary key,
   data_type   text not null,
@@ -727,28 +739,11 @@ create policy "food_cache_select_authenticated"
   on public.food_cache for select
   to authenticated
   using ( true );
--- No insert/update/delete policy => writes only via upsert_food_cache (SECURITY DEFINER).
-
--- ============ upsert_food_cache: privileged write without a service-role client ============
-create or replace function public.upsert_food_cache(
-  p_fdc_id bigint, p_data_type text, p_description text,
-  p_brand_owner text, p_gtin_upc text, p_raw jsonb, p_nutrition jsonb
-) returns void
-language plpgsql security definer set search_path = '' as $$
-begin
-  insert into public.food_cache
-    (fdc_id, data_type, description, brand_owner, gtin_upc, raw, nutrition, fetched_at)
-  values
-    (p_fdc_id, p_data_type, p_description, p_brand_owner, p_gtin_upc, p_raw, p_nutrition, now())
-  on conflict (fdc_id) do update set
-    data_type   = excluded.data_type,
-    description = excluded.description,
-    brand_owner = excluded.brand_owner,
-    gtin_upc    = excluded.gtin_upc,
-    raw         = excluded.raw,
-    nutrition   = excluded.nutrition,
-    fetched_at  = now();
-end; $$;
+-- No insert/update/delete policy => default-deny for authenticated. The server writes the
+-- cache with the service-role client (which bypasses RLS) ONLY after fetching the row from
+-- FDC. There is deliberately NO authenticated-callable write path: an earlier design exposed
+-- a SECURITY DEFINER upsert function to `authenticated`, which let any invited user write
+-- arbitrary rows and poison shared nutrition data. Writes are server-only now.
 
 -- ============ api_rate_limit (per-user fixed window; default-deny) ============
 create table public.api_rate_limit (
@@ -760,12 +755,17 @@ alter table public.api_rate_limit enable row level security;
 -- No policies => default-deny. Touched only via check_and_increment_rate (SECURITY DEFINER).
 
 -- ============ check_and_increment_rate: atomic fixed-window counter ============
--- Identity comes from auth.uid() INSIDE the function, never from a client argument.
-create or replace function public.check_and_increment_rate(
-  p_limit int, p_window_seconds int
-) returns boolean
+-- Identity comes from auth.uid() INSIDE the function. The limit and window are CONSTANTS
+-- here, NOT client arguments: an earlier design accepted them as parameters, which let an
+-- authenticated caller invoke the RPC directly with p_window_seconds => 0 to reset their own
+-- counter (or a huge p_limit) and defeat the throttle. Baking them in closes that bypass
+-- while still allowing the function to be granted to `authenticated`.
+create or replace function public.check_and_increment_rate()
+returns boolean
 language plpgsql security definer set search_path = '' as $$
 declare
+  v_limit          constant int := 60;   -- requests allowed per window
+  v_window_seconds constant int := 60;   -- window length in seconds
   uid uuid := (select auth.uid());
   allowed boolean;
 begin
@@ -775,12 +775,12 @@ begin
     values (uid, now(), 1)
   on conflict (user_id) do update set
     window_start = case
-      when public.api_rate_limit.window_start < now() - make_interval(secs => p_window_seconds)
+      when public.api_rate_limit.window_start < now() - make_interval(secs => v_window_seconds)
       then now() else public.api_rate_limit.window_start end,
     request_count = case
-      when public.api_rate_limit.window_start < now() - make_interval(secs => p_window_seconds)
+      when public.api_rate_limit.window_start < now() - make_interval(secs => v_window_seconds)
       then 1 else public.api_rate_limit.request_count + 1 end
-  returning (request_count <= p_limit) into allowed;
+  returning (request_count <= v_limit) into allowed;
 
   return allowed;
 end; $$;
@@ -789,8 +789,7 @@ end; $$;
 grant select on public.food_cache to authenticated;
 grant all    on public.food_cache to service_role;
 grant all    on public.api_rate_limit to service_role;
-grant execute on function public.upsert_food_cache(bigint,text,text,text,text,jsonb,jsonb) to authenticated;
-grant execute on function public.check_and_increment_rate(int,int) to authenticated;
+grant execute on function public.check_and_increment_rate() to authenticated;
 ```
 
 - [ ] **Step 4: Apply the migration and run the test to verify it passes**
@@ -799,7 +798,7 @@ grant execute on function public.check_and_increment_rate(int,int) to authentica
 supabase db reset --no-seed
 pnpm exec vitest run tests/rls/food-cache.test.ts --no-file-parallelism
 ```
-Expected: PASS (6 tests). (If no local stack, the suite skips — see Step 2 note.)
+Expected: PASS (8 tests). (If no local stack, the suite skips — see Step 2 note.)
 
 - [ ] **Step 5: Commit**
 
@@ -817,9 +816,8 @@ git commit -m "feat: add food_cache + api_rate_limit schema, functions, and RLS"
 - Test: `tests/dal/rate-limit.test.ts`
 
 **Interfaces:**
-- Consumes: `createClient` (`lib/supabase/server.ts`); `check_and_increment_rate` RPC (Task 4).
+- Consumes: `createClient` (`lib/supabase/server.ts`); `check_and_increment_rate()` RPC — **no args** (Task 4; limit/window are SQL constants).
 - Produces:
-  - `const RATE_LIMIT = 60`, `const RATE_WINDOW_SECONDS = 60`
   - `class RateLimitError extends Error`
   - `function enforceRateLimit(): Promise<void>` (throws `RateLimitError` when over the limit)
 
@@ -841,9 +839,7 @@ describe("enforceRateLimit", () => {
     rpc.mockResolvedValue({ data: true, error: null });
     const { enforceRateLimit } = await import("@/lib/dal/rate-limit");
     await expect(enforceRateLimit()).resolves.toBeUndefined();
-    expect(rpc).toHaveBeenCalledWith("check_and_increment_rate", {
-      p_limit: 60, p_window_seconds: 60,
-    });
+    expect(rpc).toHaveBeenCalledWith("check_and_increment_rate");
   });
 
   it("throws RateLimitError when over the limit", async () => {
@@ -872,9 +868,6 @@ Expected: FAIL — `Cannot find module '@/lib/dal/rate-limit'`.
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 
-export const RATE_LIMIT = 60;
-export const RATE_WINDOW_SECONDS = 60;
-
 export class RateLimitError extends Error {
   constructor() {
     super("Rate limit exceeded");
@@ -883,13 +876,11 @@ export class RateLimitError extends Error {
 }
 
 /** Per-user fixed-window throttle. Identity is taken from the session inside the
- *  SECURITY DEFINER DB function, so no service-role client is needed here. */
+ *  SECURITY DEFINER DB function; the limit + window are SQL constants (not passed
+ *  here) so a client cannot tune them. No service-role client is needed. */
 export async function enforceRateLimit(): Promise<void> {
   const supabase = await createClient();
-  const { data, error } = await supabase.rpc("check_and_increment_rate", {
-    p_limit: RATE_LIMIT,
-    p_window_seconds: RATE_WINDOW_SECONDS,
-  });
+  const { data, error } = await supabase.rpc("check_and_increment_rate");
   if (error) throw new Error(`rate limit check failed: ${error.message}`);
   if (data !== true) throw new RateLimitError();
 }
@@ -912,11 +903,13 @@ git commit -m "feat: add per-user rate-limit DAL"
 ## Task 6: Cache layer (`lib/fdc/cache.ts`)
 
 **Files:**
+- Create: `lib/supabase/admin.ts` (server-only service-role client)
 - Create: `lib/fdc/cache.ts`
 - Test: `tests/fdc/cache.test.ts`
 
 **Interfaces:**
-- Consumes: `searchFoods`, `getFoodDetail`, `FdcError` (Task 3); `normalizeNutrition`, `RawNutrient`, `NormalizedNutrition` (Task 1); `FdcFoodDetail`, `FdcSearchResponse` (Task 2); `createClient` (`lib/supabase/server.ts`); `upsert_food_cache` RPC (Task 4); `unstable_cache` (`next/cache`).
+- Consumes: `searchFoods`, `getFoodDetail`, `FdcError` (Task 3); `normalizeNutrition`, `RawNutrient`, `NormalizedNutrition` (Task 1); `FdcFoodDetail`, `FdcSearchResponse` (Task 2); `createClient` (`lib/supabase/server.ts`, authed L2 read); `createAdminClient` (`lib/supabase/admin.ts`, service-role L2 write); `unstable_cache` (`next/cache`).
+- Produces also: `createAdminClient()` in `lib/supabase/admin.ts` (server-only service-role Supabase client).
 - Produces:
   - `type NormalizedFood = { fdcId: number; description: string; dataType: string | null; nutrition: NormalizedNutrition }`
   - `function searchFoodsCached(args: { query: string; dataType: string[]; page: number }): Promise<FdcSearchResponse>`
@@ -942,10 +935,16 @@ vi.mock("@/lib/fdc/client", () => ({
   FdcError: FakeFdcError,
 }));
 
-const from = vi.fn();
-const rpc = vi.fn().mockResolvedValue({ error: null });
+const from = vi.fn();   // authed client — L2 read
 vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi.fn().mockResolvedValue({ from, rpc }),
+  createClient: vi.fn().mockResolvedValue({ from }),
+}));
+
+// service-role client — L2 write
+const adminUpsert = vi.fn().mockResolvedValue({ error: null });
+const adminFrom = vi.fn(() => ({ upsert: adminUpsert }));
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: vi.fn(() => ({ from: adminFrom })),
 }));
 
 // helper to stub a food_cache SELECT ... maybeSingle() result
@@ -959,7 +958,8 @@ beforeEach(() => {
   searchFoods.mockReset();
   getFoodDetail.mockReset();
   from.mockReset();
-  rpc.mockClear();
+  adminFrom.mockClear();
+  adminUpsert.mockClear();
 });
 
 describe("getFoodDetailCached", () => {
@@ -985,7 +985,8 @@ describe("getFoodDetailCached", () => {
     const { getFoodDetailCached } = await import("@/lib/fdc/cache");
     const { food } = await getFoodDetailCached(9);
     expect(food.nutrition.nutrients.energyKcal).toEqual({ amount: 100, unit: "kcal" });
-    expect(rpc).toHaveBeenCalledWith("upsert_food_cache", expect.objectContaining({ p_fdc_id: 9 }));
+    expect(adminFrom).toHaveBeenCalledWith("food_cache");
+    expect(adminUpsert).toHaveBeenCalledWith(expect.objectContaining({ fdc_id: 9 }));
   });
 
   it("serves a stale row when FDC is rate-limited", async () => {
@@ -1018,13 +1019,33 @@ describe("searchFoodsCached", () => {
 Run: `pnpm exec vitest run tests/fdc/cache.test.ts`
 Expected: FAIL — `Cannot find module '@/lib/fdc/cache'`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 3: Create the service-role client (`lib/supabase/admin.ts`)**
+
+```ts
+// lib/supabase/admin.ts
+import "server-only";
+import { createClient } from "@supabase/supabase-js";
+import { getServerEnv } from "@/lib/env";
+
+/** Service-role client. Bypasses RLS — use ONLY for server-side writes to public
+ *  reference tables (food_cache). NEVER import from app/; never expose to the client. */
+export function createAdminClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    getServerEnv().SUPABASE_SERVICE_ROLE_KEY,
+    { auth: { persistSession: false, autoRefreshToken: false } },
+  );
+}
+```
+
+- [ ] **Step 4: Write the cache implementation**
 
 ```ts
 // lib/fdc/cache.ts
 import "server-only";
 import { unstable_cache } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { searchFoods, getFoodDetail, FdcError } from "@/lib/fdc/client";
 import { normalizeNutrition, type NormalizedNutrition, type RawNutrient } from "@/lib/fdc/nutrients";
 import type { FdcFoodDetail, FdcSearchResponse } from "@/lib/validation/fdc";
@@ -1106,14 +1127,16 @@ export async function getFoodDetailCached(
     );
     const detail = await run();
     const food = toNormalized(detail);
-    await supabase.rpc("upsert_food_cache", {
-      p_fdc_id: food.fdcId,
-      p_data_type: food.dataType,
-      p_description: food.description,
-      p_brand_owner: detail.brandOwner ?? null,
-      p_gtin_upc: detail.gtinUpc ?? null,
-      p_raw: detail,
-      p_nutrition: food.nutrition,
+    // Cache write uses the service-role client (bypasses RLS). There is no
+    // authenticated write path, so an invited user cannot poison the shared cache.
+    await createAdminClient().from("food_cache").upsert({
+      fdc_id: food.fdcId,
+      data_type: food.dataType,
+      description: food.description,
+      brand_owner: detail.brandOwner ?? null,
+      gtin_upc: detail.gtinUpc ?? null,
+      raw: detail,
+      nutrition: food.nutrition,
     });
     return { food, stale: false };
   } catch (e) {
@@ -1126,16 +1149,16 @@ export async function getFoodDetailCached(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 5: Run test to verify it passes**
 
 Run: `pnpm exec vitest run tests/fdc/cache.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add lib/fdc/cache.ts tests/fdc/cache.test.ts
-git commit -m "feat: add two-layer FDC cache (in-memory L1 + Postgres L2)"
+git add lib/supabase/admin.ts lib/fdc/cache.ts tests/fdc/cache.test.ts
+git commit -m "feat: add two-layer FDC cache (in-memory L1 + Postgres L2) with service-role write"
 ```
 
 ---

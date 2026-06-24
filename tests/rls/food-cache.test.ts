@@ -12,6 +12,7 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
 
   beforeAll(async () => {
     user = await makeUser("foodcache@example.com", "Food-pw-123!");
+    // Seed via service-role (bypasses RLS) — this is the ONLY sanctioned write path.
     await admin().from("food_cache").upsert({
       fdc_id: 999001, data_type: "Branded", description: "Seed Food",
       raw: {}, nutrition: { basis: "100g", nutrients: {} },
@@ -31,15 +32,17 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
     expect(error).not.toBeNull();
   });
 
-  it("upsert_food_cache RPC lets an authed user populate the cache", async () => {
+  it("the cache-poisoning RPC is gone — authed user cannot write food_cache via upsert_food_cache", async () => {
+    // upsert_food_cache was removed; calling it must fail (function does not exist / not granted),
+    // and no row may be created. This pins the closure of the cache-poisoning vector.
     const { error } = await user.rpc("upsert_food_cache", {
-      p_fdc_id: 999003, p_data_type: "Foundation", p_description: "RPC Food",
+      p_fdc_id: 999003, p_data_type: "Foundation", p_description: "junk",
       p_brand_owner: null, p_gtin_upc: null, p_raw: {},
       p_nutrition: { basis: "100g", nutrients: {} },
     });
-    expect(error).toBeNull();
-    const { data } = await user.from("food_cache").select("description").eq("fdc_id", 999003).single();
-    expect(data!.description).toBe("RPC Food");
+    expect(error).not.toBeNull();
+    const { data } = await admin().from("food_cache").select("fdc_id").eq("fdc_id", 999003);
+    expect(data ?? []).toHaveLength(0);
   });
 
   it("api_rate_limit is default-deny for an authenticated user", async () => {
@@ -55,22 +58,36 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
     expect(data ?? []).toHaveLength(0);  // user cannot see even their own seeded row
   });
 
-  it("check_and_increment_rate allows up to the limit, then blocks", async () => {
-    const u = await makeUser("rate-block@example.com", "Rate-pw-123!");
-    const call = () => u.rpc("check_and_increment_rate", { p_limit: 2, p_window_seconds: 60 });
-    expect((await call()).data).toBe(true);
-    expect((await call()).data).toBe(true);
-    expect((await call()).data).toBe(false);
+  it("check_and_increment_rate cannot be called with client-controlled limit/window", async () => {
+    // The function takes NO arguments; an attempt to pass a forged limit/window must fail,
+    // proving the throttle config is not client-tunable.
+    const u = await makeUser("rate-args@example.com", "Rate-pw-123!");
+    const { error } = await u.rpc("check_and_increment_rate", { p_limit: 999999, p_window_seconds: 0 });
+    expect(error).not.toBeNull(); // no overload with these parameters exists
   });
 
-  it("check_and_increment_rate resets after the window elapses", async () => {
+  it("check_and_increment_rate (hard-coded 60/60s) returns true up to the limit, then false", async () => {
+    const u = await makeUser("rate-block@example.com", "Rate-pw-123!");
+    const { data: who } = await u.auth.getUser();
+    // Seed the counter to one below the hard-coded limit (60), window fresh.
+    await admin().from("api_rate_limit").upsert({
+      user_id: who.user!.id,
+      window_start: new Date().toISOString(),
+      request_count: 59,
+    });
+    expect((await u.rpc("check_and_increment_rate")).data).toBe(true);  // 60 <= 60
+    expect((await u.rpc("check_and_increment_rate")).data).toBe(false); // 61 > 60
+  });
+
+  it("check_and_increment_rate resets the count after the window elapses", async () => {
     const u = await makeUser("rate-reset@example.com", "Rate-pw-123!");
     const { data: who } = await u.auth.getUser();
-    await u.rpc("check_and_increment_rate", { p_limit: 1, p_window_seconds: 60 });
-    expect((await u.rpc("check_and_increment_rate", { p_limit: 1, p_window_seconds: 60 })).data).toBe(false);
-    await admin().from("api_rate_limit")
-      .update({ window_start: new Date(Date.now() - 120_000).toISOString() })
-      .eq("user_id", who.user!.id);
-    expect((await u.rpc("check_and_increment_rate", { p_limit: 1, p_window_seconds: 60 })).data).toBe(true);
+    // Seed an exhausted counter whose window started > 60s ago.
+    await admin().from("api_rate_limit").upsert({
+      user_id: who.user!.id,
+      window_start: new Date(Date.now() - 120_000).toISOString(),
+      request_count: 60,
+    });
+    expect((await u.rpc("check_and_increment_rate")).data).toBe(true); // window expired → reset to 1
   });
 });

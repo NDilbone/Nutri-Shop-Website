@@ -82,7 +82,7 @@ Match on the FDC **nutrient `id`** (the API's `nutrient.id` in full detail respo
 | Cache | **Two-layer**: L1 = Next 16 `unstable_cache` (short TTL, in-memory, request-coalescing); L2 = **Supabase Postgres `food_cache`** (durable, cross-instance, detail only). | Next's in-memory Data Cache is **not durable across Vercel serverless instances**, so Postgres is the real durable layer — and avoids paid Redis/KV. Search results use **L1 only** (queries are unbounded → low hit rate). |
 | L1 mechanism | `unstable_cache` (not `use cache`). | `use cache` needs `cacheComponents: true`, an **app-wide** rendering-model switch that would force re-verifying the whole auth foundation. `unstable_cache` is isolated, stable in Next 16, blast radius = the food module. |
 | Cache RLS | `food_cache`: RLS on, `authenticated` may **SELECT** (public reference data); **privileged writes only**. | Mirrors the foundation's default-deny posture; reference data is safe to read for any logged-in user. |
-| **Privileged write path** | Cache upsert + throttle run through **`SECURITY DEFINER` functions granted to `authenticated`** — **no service-role client on the request path**. Identity comes from `auth.uid()` inside the function, never from client input. | Honors the foundation's hard rule "service-role key never in a request path" *more strictly* than a service-role client would. Same pattern as the existing `handle_new_user` trigger. |
+| **Privileged write path** | **Cache writes** use a **server-only service-role client** (`lib/supabase/admin.ts`, bypasses RLS); `food_cache` has no authenticated write policy. **Throttle** uses a `SECURITY DEFINER` function (`check_and_increment_rate`) with a **hard-coded** limit/window and identity from `auth.uid()`. | A security review found the earlier "SECURITY DEFINER upsert granted to `authenticated`" let any invited user poison the shared cache, and client-supplied limit/window let a caller reset their own throttle. Service-role-write (cache) + constant-config DEFINER (throttle) close both. Service-role touches only the public reference cache (no per-user data → no IDOR), and lives in `lib/`, never `app/`. |
 | Nutrient model | Curated macros + key micros, keyed by FDC nutrient `id`, canonical units; **raw payload stored too**. | Stable contract for Phase 2; raw lets us derive more nutrients later without refetching. |
 | Rate limits | Per-user **durable** throttle (Postgres fixed-window fn) **plus** graceful FDC-429 handling. | One authed user can't exhaust the shared 1,000/hr key; durable counter works across serverless instances. |
 | dataType default | Search defaults to **Branded + Foundation + SR Legacy** (exclude Survey/FNDDS + Experimental); overridable. | Branded carries real packaged products (GTIN/UPC, brand, label serving) for the shopping-list half; Foundation/SR Legacy give clean generic macros. Survey is derived/noisy; Experimental is non-consumer. |
@@ -94,9 +94,10 @@ Match on the FDC **nutrient `id`** (the API's `nutrient.id` in full detail respo
 ```
 lib/fdc/client.ts        server-only FDC HTTP client (searchFoods, getFoodDetail)
 lib/fdc/nutrients.ts     canonical id→key map + normalize() → NormalizedNutrition
-lib/fdc/cache.ts         L1 unstable_cache wrappers + L2 Postgres read/upsert (detail)
+lib/fdc/cache.ts         L1 unstable_cache + L2 Postgres read (authed) / write (service-role)
+lib/supabase/admin.ts    server-only service-role client (cache writes only; never in app/)
 lib/validation/fdc.ts    Zod: query params, fdcId, FDC search/detail response schemas
-lib/dal/rate-limit.ts    enforceRateLimit() → SECURITY DEFINER DB function
+lib/dal/rate-limit.ts    enforceRateLimit() → check_and_increment_rate() DB function (no args)
 app/api/foods/route.ts             GET search  (replaces the 501 stub)
 app/api/foods/[fdcId]/route.ts     GET detail
 supabase/migrations/0002_food_cache.sql   food_cache + api_rate_limit + functions + RLS
@@ -104,7 +105,7 @@ supabase/migrations/0002_food_cache.sql   food_cache + api_rate_limit + function
 
 Each unit has one purpose, a typed interface, and is independently testable. `client.ts` is the
 sole reader of `FDC_API_KEY`. `nutrients.ts` is pure (no I/O). `cache.ts` composes client +
-DB. Route handlers orchestrate `requireUser → enforceRateLimit → validate → cache → respond`.
+DB. Route handlers orchestrate `verifySession → enforceRateLimit → validate → cache → respond`.
 
 ---
 
@@ -128,35 +129,19 @@ create policy "food_cache_select_authenticated"
   on public.food_cache for select
   to authenticated
   using ( true );                 -- public reference data; any logged-in user may read
--- No insert/update/delete policy => writes only via the SECURITY DEFINER upsert fn below.
+-- No insert/update/delete policy => default-deny. The server writes the cache with the
+-- service-role client (bypasses RLS) ONLY after fetching from FDC. There is deliberately NO
+-- authenticated-callable write path.
 
 grant select on public.food_cache to authenticated;
 grant all    on public.food_cache to service_role;
 ```
 
-### Cache upsert function (privileged write, no service-role client)
-```sql
-create or replace function public.upsert_food_cache(
-  p_fdc_id bigint, p_data_type text, p_description text,
-  p_brand_owner text, p_gtin_upc text, p_raw jsonb, p_nutrition jsonb
-) returns void
-language plpgsql security definer set search_path = '' as $$
-begin
-  insert into public.food_cache
-    (fdc_id, data_type, description, brand_owner, gtin_upc, raw, nutrition, fetched_at)
-  values
-    (p_fdc_id, p_data_type, p_description, p_brand_owner, p_gtin_upc, p_raw, p_nutrition, now())
-  on conflict (fdc_id) do update set
-    data_type = excluded.data_type, description = excluded.description,
-    brand_owner = excluded.brand_owner, gtin_upc = excluded.gtin_upc,
-    raw = excluded.raw, nutrition = excluded.nutrition, fetched_at = now();
-end; $$;
-grant execute on function public.upsert_food_cache(bigint,text,text,text,text,jsonb,jsonb)
-  to authenticated;
-```
-> A `SECURITY DEFINER` write fn keyed by `fdc_id` (not a user id) is safe: rows are global
-> reference data, the food id is validated server-side, and the function cannot be coerced into
-> touching another user's private data.
+> **Cache writes are server-only via the service-role client** (`lib/supabase/admin.ts`), not a
+> SECURITY DEFINER function. An earlier design exposed an `upsert_food_cache` function granted to
+> `authenticated`; a security review found it let any invited user write arbitrary rows and poison
+> shared nutrition data. Service-role touches only this public reference table (no per-user rows →
+> no IDOR), lives in `lib/` (CI greps service-role out of `app/`), and the key never reaches the client.
 
 ### `api_rate_limit` (per-user fixed window)
 ```sql
@@ -168,11 +153,14 @@ create table public.api_rate_limit (
 alter table public.api_rate_limit enable row level security;
 -- No policies => default-deny. Touched only via the SECURITY DEFINER fn below.
 
-create or replace function public.check_and_increment_rate(
-  p_limit int, p_window_seconds int
-) returns boolean
+-- Limit + window are CONSTANTS, not parameters: a client-tunable window let a caller reset
+-- their own counter (p_window_seconds => 0) and defeat the throttle.
+create or replace function public.check_and_increment_rate()
+returns boolean
 language plpgsql security definer set search_path = '' as $$
 declare
+  v_limit          constant int := 60;
+  v_window_seconds constant int := 60;
   uid uuid := (select auth.uid());   -- identity from the session, never from client input
   allowed boolean;
 begin
@@ -181,15 +169,15 @@ begin
     values (uid, now(), 1)
   on conflict (user_id) do update set
     window_start  = case when public.api_rate_limit.window_start
-                              < now() - make_interval(secs => p_window_seconds)
+                              < now() - make_interval(secs => v_window_seconds)
                          then now() else public.api_rate_limit.window_start end,
     request_count = case when public.api_rate_limit.window_start
-                              < now() - make_interval(secs => p_window_seconds)
+                              < now() - make_interval(secs => v_window_seconds)
                          then 1 else public.api_rate_limit.request_count + 1 end
-  returning (request_count <= p_limit) into allowed;
+  returning (request_count <= v_limit) into allowed;
   return allowed;
 end; $$;
-grant execute on function public.check_and_increment_rate(int,int) to authenticated;
+grant execute on function public.check_and_increment_rate() to authenticated;
 ```
 
 RLS coverage for both new tables is added to the CI isolation suite (§9).
@@ -242,7 +230,7 @@ type NormalizedNutrition = {
 2. Validate `fdcId` (positive integer).
 3. **L2**: select `food_cache` by `fdc_id`; if present and `fetched_at` within the refresh window (**30 days** — CC0 data is effectively immutable per id) → return it.
 4. Miss → `unstable_cache(() => getFoodDetail(fdcId), ['foods-detail', fdcId], { revalidate: 900 })`.
-5. `normalize()` → `upsert_food_cache(...)` → respond `200`:
+5. `normalize()` → service-role upsert into `food_cache` → respond `200`:
 ```jsonc
 { "fdcId": 534358, "description": "...", "dataType": "Branded",
   "nutrition": { "basis": "100g", "serving": { "amount": 28, "unit": "g", "household": "1 ONZ" },
@@ -281,10 +269,10 @@ All error responses use `{ "error": { "code": "<CODE>", "message": "<safe text>"
 |---|---|
 | `nutrients` | per-dataType fixtures (Foundation w/ Atwater 2047, Branded w/ labelNutrients + per-100g, SR Legacy); missing nutrient → `null`; vitD µg vs IU fallback; energy fallback chain; uppercase unit normalization. |
 | `client` | mock `fetch`: correct URL + `api_key` + `format=full`; 200 parse; 429 → typed `UpstreamRateLimited`; 403 → typed key error; malformed body → Zod error; key-missing → typed 503 error. |
-| `cache` | L2 hit skips `fetch`; L2 miss → fetch + `upsert_food_cache`; stale-on-429 path returns cached row with `stale:true`. |
-| `rate-limit` | under limit allowed; over limit blocked; window reset after `p_window_seconds`. |
-| routes | unauth → 401/redirect; throttled → 429; invalid params → 400; happy search + detail (mocked client). |
-| RLS (CI) | `food_cache`: authenticated can SELECT, anon cannot; writes blocked except via fn. `api_rate_limit`: default-deny for authenticated/anon. |
+| `cache` | L2 hit skips `fetch`; L2 miss → fetch + service-role upsert; stale-on-429 path returns cached row with `stale:true`. |
+| `rate-limit` | DAL calls `check_and_increment_rate()` (no args); maps `false` → `RateLimitError`; rpc error → throw. |
+| routes | unauth → 401; throttled → 429; invalid params → 400; happy search + detail (mocked client). |
+| RLS (CI) | `food_cache`: authenticated can SELECT, cannot INSERT directly, and the removed `upsert_food_cache` RPC errors (poisoning closed). `api_rate_limit`: default-deny (seed-then-deny). `check_and_increment_rate()` rejects forged args, returns true≤limit then false, resets after window. |
 
 The existing `tests/api/foods.test.ts` (501 stub) is replaced by real coverage. `FDC_API_KEY` is
 **not** required in CI — `fetch` is mocked; the key-missing path is itself a tested branch.
@@ -298,7 +286,9 @@ The existing `tests/api/foods.test.ts` (501 stub) is replaced by real coverage. 
 | FDC schema drift / spec inaccuracies (array-vs-object, misspelled `postassium`, `nutrient.number` string-vs-int across abridged/full). | Lenient Zod parsing (`.passthrough()`/optional), match on `nutrient.id`, store `raw`, fixtures per dataType in tests. |
 | Shared 1,000/hr key exhausted by one user. | Per-user durable throttle (`check_and_increment_rate`) + L1/L2 cache minimizing upstream calls. |
 | Key leak. | Read only in `lib/fdc/client.ts` + `import 'server-only'`; never in `NEXT_PUBLIC_`, responses, or logs. |
-| Service-role on the request path (foundation hard rule). | Avoided entirely — privileged writes via `SECURITY DEFINER` fns granted to `authenticated`. |
+| Cache poisoning by an invited user (a write fn granted to `authenticated`). | No authenticated write path. Cache writes use the service-role client in `lib/` only, after fetching from FDC. (Security-review finding; original DEFINER-upsert design removed.) |
+| Throttle bypass via client-tunable limit/window. | `check_and_increment_rate()` takes no arguments; limit + window are SQL constants. (Security-review finding.) |
+| Service-role exposure. | Service-role client lives in `lib/supabase/admin.ts` (`import 'server-only'`), used only for the public `food_cache` write (no per-user data → no IDOR); CI greps `SERVICE_ROLE` out of `app/`. |
 | `unstable_cache` in-memory not durable across Vercel instances. | Durable layer is Postgres `food_cache`, not the in-memory cache. |
 | Caching authed/secret data by accident. | Only public CC0 reference data is cached; no per-user data in `food_cache`; no auth tokens in cache keys. |
 | Missing nutrient mis-read as zero. | `null` sentinel enforced + unit-tested. |
