@@ -39,10 +39,11 @@ jobs:
         with:
           version: latest
 
-      - name: Start local Supabase (applies migrations)
+      - name: Start local Supabase + apply migrations
         run: |
           [ -f supabase/config.toml ] || supabase init
           supabase start
+          supabase db reset --no-seed
 
       - name: Export local Supabase creds (anchored parse; values may contain '=')
         run: |
@@ -72,6 +73,12 @@ jobs:
         run: pnpm exec vitest run tests/rls tests/auth/invite-gate.test.ts --no-file-parallelism
         env:
           REQUIRE_SUPABASE_TESTS: "1"
+
+      - name: Dump auth (GoTrue) logs on failure
+        if: failure()
+        run: |
+          echo "=== containers ===" ; docker ps --format '{{.Names}}' || true
+          echo "=== auth logs ===" ; docker logs "$(docker ps -aqf name=supabase_auth)" 2>&1 | tail -80 || true
 
       - name: Stop local Supabase
         if: always()
