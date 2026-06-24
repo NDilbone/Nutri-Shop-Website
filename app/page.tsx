@@ -3,5 +3,5 @@ import { verifySession } from "@/lib/dal/session";
 
 export default async function Home() {
   const session = await verifySession();
-  redirect(session ? "/dashboard" : "/login");
+  redirect(session ? "/today" : "/login");
 }

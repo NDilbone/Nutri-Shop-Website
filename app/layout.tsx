@@ -1,6 +1,9 @@
 import "./globals.css";
 import type { ReactNode } from "react";
 import { headers } from "next/headers";
+import { Inter } from "next/font/google";
+
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
 export const metadata = { title: "Nutri-Shop", description: "Private nutrition tracker" };
 
@@ -9,8 +12,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // CSP nonce (set on the request header in proxy.ts) onto its own scripts.
   await headers();
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-dvh">{children}</body>
     </html>
   );
 }
