@@ -1,5 +1,6 @@
 // lib/fdc/client.ts
 import "server-only";
+import { ZodError } from "zod";
 import { getServerEnv } from "@/lib/env";
 import {
   fdcSearchResponseSchema,
@@ -29,8 +30,15 @@ function apiKey(): string {
   let key: string | undefined;
   try {
     key = getServerEnv().FDC_API_KEY;
-  } catch {
-    throw new FdcError("key_missing", "FDC_API_KEY is not configured");
+  } catch (e) {
+    if (
+      e instanceof ZodError &&
+      e.issues.length > 0 &&
+      e.issues.every((i) => i.path[0] === "FDC_API_KEY")
+    ) {
+      throw new FdcError("key_missing", "FDC_API_KEY is not configured");
+    }
+    throw e;
   }
   if (!key) throw new FdcError("key_missing", "FDC_API_KEY is not configured");
   return key;

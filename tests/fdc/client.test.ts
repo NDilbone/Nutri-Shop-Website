@@ -85,4 +85,36 @@ describe("FDC client", () => {
       searchFoods({ query: "x", dataType: ["Branded"], pageNumber: 1 }),
     ).rejects.toMatchObject({ kind: "invalid_response" });
   });
+
+  it("does NOT label a non-FDC env error as key_missing", async () => {
+    vi.resetModules();
+    vi.stubEnv("FDC_API_KEY", "valid-key");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", ""); // fails Zod min(1) on SUPABASE key, not FDC
+    const { searchFoods } = await import("@/lib/fdc/client");
+    await expect(
+      searchFoods({ query: "x", dataType: ["Branded"], pageNumber: 1 }),
+    ).rejects.toSatisfy((err: unknown) => {
+      if (err instanceof Error && "kind" in err) {
+        return (err as { kind: string }).kind !== "key_missing";
+      }
+      return true; // non-FdcError (e.g. ZodError) satisfies the requirement
+    });
+  });
+
+  it("does not leak the api key in error messages", async () => {
+    const stubKey = "super-secret-key-abc123";
+    vi.resetModules();
+    vi.stubEnv("FDC_API_KEY", stubKey);
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "srv");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 403 })));
+    const { searchFoods } = await import("@/lib/fdc/client");
+    let caughtErr: Error | undefined;
+    try {
+      await searchFoods({ query: "x", dataType: ["Branded"], pageNumber: 1 });
+    } catch (e) {
+      caughtErr = e as Error;
+    }
+    expect(caughtErr).toBeDefined();
+    expect(caughtErr!.message).not.toContain(stubKey);
+  });
 });
