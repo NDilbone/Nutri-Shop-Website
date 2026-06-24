@@ -45,17 +45,23 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("food_cache + api_rate_limit RLS", () =>
     expect(data ?? []).toHaveLength(0);
   });
 
-  it("api_rate_limit is default-deny for an authenticated user", async () => {
+  it("api_rate_limit is locked down — an authenticated user cannot read it at all", async () => {
     const { data: who } = await user.auth.getUser();
-    // Seed a row via service-role (bypasses RLS) so there IS data to be blocked.
+    // Seed a row via service-role (bypasses RLS) so there IS data that must stay hidden.
     await admin().from("api_rate_limit").upsert({
       user_id: who.user!.id,
       window_start: new Date().toISOString(),
       request_count: 1,
     });
     const { data, error } = await user.from("api_rate_limit").select("user_id");
-    expect(error).toBeNull();            // Supabase RLS denies silently (no error)
-    expect(data ?? []).toHaveLength(0);  // user cannot see even their own seeded row
+    // `api_rate_limit` has NO grant to `authenticated`, so Postgres denies at the privilege
+    // layer with 42501 (permission denied) — a stronger lockdown than a silent RLS 0-row deny.
+    // The table is reachable only via the SECURITY DEFINER check_and_increment_rate() function
+    // and the service-role client. (A direct select returning 0 rows would require a SELECT
+    // grant we deliberately do not give; the hard denial is the desired posture.)
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("42501");
+    expect(data ?? []).toHaveLength(0);
   });
 
   it("check_and_increment_rate cannot be called with client-controlled limit/window", async () => {
