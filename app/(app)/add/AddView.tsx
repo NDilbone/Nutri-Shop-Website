@@ -27,6 +27,7 @@ export function AddView({ date, presetMeal }: { date: string; presetMeal: Meal }
   async function runSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!q.trim()) return;
+    setToast(null);
     setSearching(true);
     try {
       const params = new URLSearchParams({ q: q.trim() });

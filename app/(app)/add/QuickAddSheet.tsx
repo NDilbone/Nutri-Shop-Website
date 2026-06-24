@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { NormalizedFood } from "@/lib/fdc/cache";
 import type { Meal } from "@/lib/nutrition/types";
 import { MEALS } from "@/lib/nutrition/types";
@@ -30,6 +30,13 @@ export function QuickAddSheet({
   const [unit, setUnit] = useState<"g" | "serving">("g");
   const [value, setValue] = useState<string>(String(initialGrams));
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setMeal(initialMeal);
+    setUnit("g");
+    setValue(String(initialGrams));
+  }, [open, food, initialMeal, initialGrams]);
 
   const serving = food?.nutrition.serving;
   const grams = unit === "g"
