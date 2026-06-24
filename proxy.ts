@@ -10,7 +10,7 @@ export async function proxy(request: NextRequest) {
 
   // 1) per-request CSP nonce (set on the REQUEST headers so Next stamps scripts)
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
-  const supaWss = supaUrl.replace(/^https/, "wss");
+  const supaWss = supaUrl.replace(/^http/, "ws");
   const csp = [
     `default-src 'self'`,
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""}`,
