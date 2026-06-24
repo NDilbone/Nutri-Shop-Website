@@ -1,0 +1,6 @@
+# pnpm settings (pnpm 11 moved these out of package.json's "pnpm" field).
+# Approve the only two dependencies that ship build scripts so installs don't
+# fail with ERR_PNPM_IGNORED_BUILDS. Both ship prebuilt native binaries.
+allowBuilds:
+  sharp: true
+  unrs-resolver: true
