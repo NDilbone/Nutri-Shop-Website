@@ -35,6 +35,7 @@ A logged-in, invited user can **install** Nutri-Shop to their home screen / desk
 | # | Decision | Rationale |
 |---|----------|-----------|
 | PWA toolkit | **`@serwist/next` + `serwist` `9.5.11`** (latest stable; `10.0.0` is preview-only). | Serwist is the maintained successor to next-pwa/Workbox for the App Router; the foundation spec already reserved this exact version. |
+| Build bundler | **`next build --webpack`** — opt out of Next 16's default Turbopack **for the production build only**. `next dev` stays on Turbopack (SW off in dev); local SW testing is `pnpm build && pnpm start`. | `@serwist/next` emits the SW + precache manifest via a **webpack plugin**, which Turbopack does not execute — under Turbopack `self.__SW_MANIFEST` would be undefined and no SW is written. The Turbopack-native path (`@serwist/turbopack`) is part of the **preview** Serwist 10 → excluded by the stable-only rule. `--webpack` is a fully supported opt-out in Next 16. `pnpm lint` runs as its own CI step, so moving the build off Turbopack loses no lint coverage. |
 | SW caching | **Minimal precache + NetworkOnly + offline fallback.** Precache static build assets only; navigations are NetworkOnly with a precached `/~offline` fallback; API/REST/RSC/auth are NetworkOnly. | The roadmap rule is "SW kept out of auth/REST caching." A private multi-user app must never serve one user's cached authed HTML/JSON to another on a shared install. Rejected Serwist's stock `defaultCache` (NetworkFirst-caches pages, RSC, and `/api` GETs → stale + cross-user leakage risk). |
 | Offline UX | **Branded `/~offline` page**, public + static, zero user data. | Installability + a real "you're offline" screen, without caching anything private. |
 | Icons | **Owner-supplied master art** at `assets/icon-master.svg` (or a ≥512px PNG) → a `gen:icons` script (using `sharp`, already an approved build dep) emits all sizes into `public/icons/`; outputs are committed. | The owner wants to supply the artwork. Committing the generated outputs keeps CI/Vercel art-free and deterministic. |
@@ -50,23 +51,41 @@ A logged-in, invited user can **install** Nutri-Shop to their home screen / desk
 ## 3. PWA architecture
 
 ### 3.1 Build wiring
-`next.config.ts` is wrapped with `withSerwist` from `@serwist/next`:
+`next.config.ts` is wrapped with `withSerwist` from `@serwist/next`. The production build runs under webpack (`next build --webpack`) so the plugin executes:
 
 ```ts
+import { spawnSync } from "node:child_process";
+import type { NextConfig } from "next";
 import withSerwistInit from "@serwist/next";
+
+// Stable cache-busting revision for the explicitly-precached /~offline document.
+const revision =
+  process.env.VERCEL_GIT_COMMIT_SHA ??
+  spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf-8" }).stdout.trim() ??
+  undefined;
+
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  async headers() {
+    return [{ source: "/(.*)", headers: securityHeaders }];
+  },
+};
 
 const withSerwist = withSerwistInit({
   swSrc: "app/sw.ts",
   swDest: "public/sw.js",
-  // SW enabled in dev too, so install + offline can be exercised locally.
-  disable: false,
-  // reloadOnOnline default; cacheOnNavigation NOT used (NetworkOnly navigations).
+  // SW only in production builds; `next dev` (Turbopack) runs without it.
+  disable: process.env.NODE_ENV === "development",
+  // Precache the offline fallback document explicitly (it is not a build asset).
+  additionalPrecacheEntries: [{ url: "/~offline", revision }],
 });
 
 export default withSerwist(nextConfig);
 ```
 
-The existing `headers()` block and `reactStrictMode` are preserved; `withSerwist` wraps the final config object.
+`package.json` scripts change: `"build": "next build --webpack"` (CI runs `pnpm build`, so this propagates). `next dev` is unchanged (Turbopack, no SW). The existing `headers()` and `reactStrictMode` are preserved; `withSerwist` wraps the final config object. `cacheOnNavigation` is **not** set (navigations stay NetworkOnly).
+
+**Vercel:** zero-config Next.js builds may invoke Turbopack regardless of the `build` script. To force webpack on Vercel, add a `vercel.json` with `{ "buildCommand": "next build --webpack" }` (version-controlled, deterministic). The deploy e2e (§7) verifies `/sw.js` is actually served — the canary that webpack ran.
 
 ### 3.2 Service worker (`app/sw.ts`)
 A single TypeScript SW compiled by Serwist:
@@ -103,7 +122,7 @@ serwist.addEventListeners();
 
 Key invariants:
 - **`runtimeCaching: []`** — no runtime caches at all. Navigations and fetches go to the network; only the precache (static assets) and the `/~offline` fallback are served from the SW.
-- `__SW_MANIFEST` is injected by Serwist at build time and contains only built static assets (`_next/static/*`, fonts, the committed icons, the precached `/~offline` document). It does **not** include authenticated route HTML.
+- `__SW_MANIFEST` is injected by Serwist at build time and contains only built static assets (`_next/static/*`, fonts, the committed icons) plus the `/~offline` document added via `additionalPrecacheEntries` (§3.1). It does **not** include authenticated route HTML.
 - `skipWaiting`/`clientsClaim` so an updated SW takes over promptly (acceptable: there is no cached private data to invalidate).
 
 ### 3.3 Manifest (`app/manifest.ts`)
@@ -154,7 +173,7 @@ No analytics, no re-nudging beyond the persisted dismissal.
 ### 3.6 Offline route (`app/~offline/page.tsx`)
 - A folder literally named `~offline` → route `/~offline`. Lives **outside** the `(app)` group so it has **no `requireUser()` gate**, and is added to `PUBLIC_PATHS` in `proxy.ts` so it precaches cleanly even pre-login.
 - Pure static, server-rendered, **no data fetching**: brand mark, "You're offline", a one-line "Reconnect to log food and update your list", and a **Retry** button. The page is a Server Component; the Retry button is a tiny client island that calls `location.reload()`. Uses existing dark-editorial tokens.
-- Serwist precaches this document; the SW serves it for any failed document navigation.
+- Precached via `additionalPrecacheEntries` (§3.1); the SW serves it for any failed document navigation.
 
 ---
 
@@ -205,24 +224,27 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 ## 6. Components & files
 
 **New**
+- `lib/security/csp.ts` — `buildCsp(nonce, { dev })` pure function (extracted from `proxy.ts`, testable).
+- `lib/security/public-paths.ts` — `PUBLIC_PATHS` + `isPublicPath(pathname)` (extracted from `proxy.ts`, testable).
+- `lib/pwa/install.ts` — `getInstallState(env)` pure platform-detection function (consumed by `InstallPrompt`).
 - `app/sw.ts` — service worker source.
 - `app/manifest.ts` — typed web manifest.
-- `app/~offline/page.tsx` — offline fallback route (public, static).
+- `app/~offline/page.tsx` + `app/~offline/RetryButton.tsx` — offline fallback route (public, static) + its client Retry island.
 - `components/ui/SideNav.tsx` — desktop sidebar (client, collapsible).
 - `components/ui/InstallPrompt.tsx` — install button + iOS hint (client).
 - `scripts/gen-icons.mjs` — `sharp` icon generator (`pnpm gen:icons`).
 - `assets/icon-master.svg` — owner-supplied master (placeholder until provided).
 - `public/icons/*`, `public/favicon.ico` — committed generated outputs.
+- `vercel.json` — `{ "buildCommand": "next build --webpack" }` so Vercel builds under webpack (the SW plugin runs).
 
 **Modified**
-- `next.config.ts` — wrap with `withSerwist`.
-- `proxy.ts` — `worker-src`/`manifest-src` CSP, `sw.js` matcher exclusion, `/~offline` public.
+- `next.config.ts` — wrap with `withSerwist`; import `securityHeaders`; `additionalPrecacheEntries` for `/~offline`.
+- `proxy.ts` — use `buildCsp` (adds `worker-src`/`manifest-src`), `isPublicPath` (incl. `/~offline`), `sw.js` matcher exclusion.
 - `app/layout.tsx` — PWA `<head>` meta (`theme-color`, `apple-mobile-web-app-*`, `apple-touch-icon`, `apple-mobile-web-app-title`).
-- `InstallPrompt` is mounted once in `app/(app)/layout.tsx` (the authenticated shell), so it surfaces for logged-in users across both nav surfaces; it self-hides when standalone/installed.
-- `app/(app)/layout.tsx` — responsive shell (TabBar ↔ SideNav, content width).
+- `app/(app)/layout.tsx` — responsive shell (TabBar ↔ SideNav, content width); mount `InstallPrompt` once here (self-hides when standalone/installed).
 - `components/ui/Sheet.tsx` — responsive bottom-sheet ↔ modal.
 - `app/(app)/today/TodayView.tsx`, `app/(app)/list/ListView.tsx`, `app/(app)/add/AddView.tsx` — `lg` multi-column reflow.
-- `package.json` — deps (`@serwist/next`, `serwist`, `sharp`), `gen:icons` script.
+- `package.json` — deps (`@serwist/next`, `serwist`, `sharp`); `"build": "next build --webpack"`; `gen:icons` script.
 - `pnpm-workspace.yaml` — `sharp` already in `allowBuilds` (confirm); add nothing new unless a new native dep appears.
 - `.gitignore` — ensure `public/sw.js` and Serwist build artifacts (`public/swe-worker-*.js`) are ignored (generated at build), while `public/icons/*` stay committed.
 
@@ -230,14 +252,15 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 
 ## 7. Testing
 
-**Automated (Vitest, offline-safe):**
-- `manifest.ts`: returns required fields; `theme_color`/`background_color` = `#0f1411`; `start_url` = `/today`; includes a maskable icon.
-- `proxy.ts` / `headers.test.ts` (extend existing): CSP contains `worker-src 'self'` and `manifest-src 'self'`; the matcher source excludes `sw.js`; `/~offline` is treated as public (no redirect).
-- `InstallPrompt`: renders the iOS hint under a simulated iOS-Safari-non-standalone environment; renders the install button when a `beforeinstallprompt` event is dispatched; renders nothing in standalone; respects the persisted dismissal flag.
-- `Sheet`: renders bottom-sheet classes below `lg` and modal classes at `≥lg` (class-presence assertion via matchMedia mock); `open`/`onClose` contract unchanged.
-- `SideNav`: active-state matches pathname; collapse state initializes from `localStorage` without an effect loop.
+**Automated (Vitest, `node` env, `tests/**/*.test.ts`).** The suite has **no DOM/render infra** (no jsdom, no Testing Library) and none is added — tests target **extracted pure functions**, not component rendering. Presentational changes (modal `Sheet`, `SideNav`, reflow) are verified by manual e2e + screenshots, consistent with the project's existing logic-only suite.
+- `lib/security/csp.ts` (`tests/security/csp.test.ts`): `buildCsp` output contains `worker-src 'self'` and `manifest-src 'self'`; prod branch uses nonce'd `style-src` (regression-guards the existing CSP shape).
+- `lib/security/public-paths.ts` (`tests/security/public-paths.test.ts`): `isPublicPath("/~offline")` is `true`; `isPublicPath("/today")` is `false`; existing public paths still pass.
+- `proxy.ts` matcher (`tests/proxy-matcher.test.ts`): `config.matcher[0].source` excludes `sw.js` (and `manifest.webmanifest`, `favicon.ico`).
+- `app/manifest.ts` (`tests/pwa/manifest.test.ts`): returns required fields; `theme_color`/`background_color` = `#0f1411`; `start_url` = `/today`; includes a `purpose: "maskable"` icon. (Type-only `next` import → safe in `node`.)
+- `lib/pwa/install.ts` (`tests/pwa/install.test.ts`): `getInstallState` → `"hidden"` when standalone; `"ios-hint"` for iOS-Safari-non-standalone-not-dismissed; `"chromium-button"` when a deferred prompt is available and not dismissed; `"hidden"` when dismissed.
 
 **Manual e2e (owner, against the deployed app):**
+- **Build canary (do first):** the deployed `/sw.js` returns `200` with a JS content-type and Application → Service Workers shows it registered. If `/sw.js` is `404`, Vercel built under Turbopack — fix the Build Command (§3.1) and redeploy.
 - Install on **Android Chrome/Brave/Edge** (native mini-infobar **and** our Install button), **desktop Chrome/Edge/Brave** (URL-bar icon **and** our sidebar Install button), and **iPhone Safari** (Share → Add to Home Screen following the hint). Each launches standalone with the correct icon, name, and `#0f1411` theme color.
 - **Airplane mode** → launching / navigating shows the branded `/~offline` page, not the browser error.
 - **Privacy check:** log in as user A, install, then with the network on confirm authenticated pages always reflect live data (NetworkOnly) — nothing stale is served from the SW; DevTools → Application → Cache Storage shows **only static assets + `/~offline`**, no authed HTML/JSON.
@@ -256,7 +279,9 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 | Maskable icon crops the logo. | `gen-icons.mjs` pads the master onto a safe-area `#0f1411` canvas for the maskable variant. |
 | Desktop redesign regresses the phone layout. | All desktop rules are `lg:`-gated additive utilities; phone classes untouched; resize check in e2e. |
 | Bigger scope than prior single-concern phases (PWA + redesign). | Two clean parts with no shared data layer; PWA is config/SW/manifest, the redesign is layout-only CSS in existing components — independently reviewable; the implementation plan sequences them so either could land alone if needed. |
-| `serwist` `10.0.0` tempts an upgrade. | Pinned to `9.5.11` (latest **stable**); `10.x` is preview-only — revisit when it GAs. |
+| `serwist` `10.0.0` tempts an upgrade. | Pinned to `9.5.11` (latest **stable**); `10.x` (incl. `@serwist/turbopack`) is preview-only — revisit when it GAs. |
+| Next 16 builds with Turbopack by default → the Serwist webpack plugin never runs → no `/sw.js`, `__SW_MANIFEST` undefined. | Build with `next build --webpack` (package.json) **and** `vercel.json` `buildCommand`; deploy build-canary in §7 catches a Turbopack regression immediately. |
+| Switching the build to webpack changes the prod pipeline / could slow builds or surface a webpack-only error. | Webpack is a first-class supported opt-out in Next 16; `pnpm lint`/`typecheck`/`test` run independently of the bundler; CI `pnpm build` exercises the webpack build on every PR before deploy. |
 
 ---
 
