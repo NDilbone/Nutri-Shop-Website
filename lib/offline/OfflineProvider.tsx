@@ -105,7 +105,18 @@ export function OfflineProvider({ userId, children }: { userId: string; children
     if (!ready) { postSignOut(); return; }
     const dirty = await getDirtyCount(ready.db);
     const decision = signOutDecision(dirty, navigator.onLine);
-    if (decision === "sync-then-wipe") await doSync();
+    if (decision === "sync-then-wipe") {
+      try {
+        await doSync();
+      } catch {
+        // Pre-wipe sync failed (auth expired, network, the first-sync bug). Degrade
+        // to the offline confirm path rather than leaving the user stuck and signed in.
+        const ok = window.confirm(
+          "Could not sync your changes. Sign out anyway? Unsynced edits will be lost.",
+        );
+        if (!ok) return;
+      }
+    }
     if (decision === "confirm-then-wipe") {
       const ok = window.confirm(`${dirty} unsynced change(s) will be lost. Sign out anyway?`);
       if (!ok) return;
