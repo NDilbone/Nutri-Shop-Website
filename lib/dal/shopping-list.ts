@@ -60,7 +60,7 @@ export async function getItems(): Promise<ShoppingListItem[]> {
     .eq("list_id", listId)
     .is("deleted_at", null);
   if (error) throw new Error(`getItems failed: ${error.message}`);
-  return (data as Row[]).map((r) => ({
+  return (data ?? []).map((r: Row) => ({
     id: r.id, name: r.name, quantity: r.quantity,
     category: r.category as ShoppingListItem["category"],
     fdcId: r.fdc_id, checked: r.checked, createdAt: r.created_at,

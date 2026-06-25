@@ -132,5 +132,6 @@ describe("getItems", () => {
     const items = await getItems();
     expect(items).toEqual([{ id: "i1", name: "Milk", quantity: "1 gal", category: "dairy", fdcId: null, checked: false, createdAt: "2026-06-24T00:00:00Z" }]);
     expect(eq).toHaveBeenCalledWith("list_id", "L1");
+    expect(is).toHaveBeenCalledWith("deleted_at", null);
   });
 });
