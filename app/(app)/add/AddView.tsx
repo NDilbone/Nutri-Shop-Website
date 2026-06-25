@@ -5,6 +5,7 @@ import type { NormalizedFood } from "@/lib/fdc/cache";
 import type { Meal } from "@/lib/nutrition/types";
 import { todayLocal } from "@/lib/date";
 import { addFoodAction } from "@/app/(app)/today/actions";
+import { addItemAction } from "@/app/(app)/list/actions";
 import { Input } from "@/components/ui/Input";
 import { Segmented } from "@/components/ui/Segmented";
 import { QuickAddSheet } from "./QuickAddSheet";
@@ -85,6 +86,10 @@ export function AddView({ date, presetMeal }: { date: string; presetMeal: Meal }
         initialGrams={selected?.nutrition.serving?.amount ?? 100}
         mode="add"
         onSubmit={submit}
+        onAddToList={selected ? async () => {
+          await addItemAction({ name: selected.description, fdcId: selected.fdcId });
+          setToast("Added to shopping list.");
+        } : undefined}
       />
 
       {toast ? <p role="status" className="fixed inset-x-0 bottom-24 mx-auto w-fit rounded-md bg-surface px-4 py-2 text-sm text-text shadow-lg">{toast}</p> : null}
