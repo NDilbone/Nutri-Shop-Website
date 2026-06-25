@@ -67,9 +67,9 @@ export function AddView({ date, presetMeal }: { date: string; presetMeal: Meal }
       </div>
 
       {searching ? <p className="text-sm text-muted">Searching…</p> : null}
-      <ul className="divide-y divide-border">
+      <ul className="divide-y divide-border lg:grid lg:grid-cols-2 lg:gap-x-6 lg:divide-y-0">
         {results.map((r) => (
-          <li key={r.fdcId}>
+          <li key={r.fdcId} className="lg:border-b lg:border-border">
             <button type="button" onClick={() => pick(r.fdcId)} className="w-full py-3 text-left">
               <div className="text-sm">{r.description}</div>
               <div className="text-[11px] text-muted">{r.brandOwner ? `${r.brandOwner} · ` : ""}{r.dataType ?? ""}</div>
