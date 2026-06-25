@@ -51,7 +51,18 @@ export function TabBar() {
       <Sheet open={chooser} onClose={() => setChooser(false)} title="Add">
         <div className="grid gap-2">
           <Button onClick={() => { setChooser(false); router.push("/add"); }}>Log food</Button>
-          <Button variant="ghost" onClick={() => { setChooser(false); setAddOpen(true); }}>Add to list</Button>
+          {/* Disable "Add to list" until the offline store is ready: otherwise the
+              add silently drops (addToList early-returns when status !== "ready"). */}
+          <Button
+            variant="ghost"
+            disabled={off.status !== "ready"}
+            onClick={() => { setChooser(false); setAddOpen(true); }}
+          >
+            Add to list
+          </Button>
+          {off.status !== "ready" ? (
+            <p className="text-center text-[11px] text-muted">List storage is still loading…</p>
+          ) : null}
         </div>
       </Sheet>
 

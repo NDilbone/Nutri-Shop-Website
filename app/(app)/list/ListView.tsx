@@ -54,7 +54,7 @@ export function ListView() {
     sync();
   }
 
-  const onAdd = (input: IdemDraft) =>
+  const onAdd = (input: InlineAddDraft) =>
     withSync(async () =>
       addLocalItem(db, cryptoKey, await getOrInitListId(db), {
         name: input.name,
@@ -199,4 +199,4 @@ export function ListView() {
 }
 
 // Local alias matching ItemDraft shape used for inline-add
-type IdemDraft = { name: string; quantity: string; category: "" };
+type InlineAddDraft = { name: string; quantity: string; category: "" };

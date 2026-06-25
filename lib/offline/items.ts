@@ -89,8 +89,14 @@ export async function clearCheckedLocal(db: ListDb, key: CryptoKey): Promise<voi
   // Dexie cannot index null, so full-scan and filter in memory (same as displayItems).
   const rows = (await db.items.toArray()).filter((r) => r.deletedAt === null);
   for (const row of rows) {
-    const content = await decryptContent(key, row.iv, row.cipher);
-    if (content.checked) await deleteLocalItem(db, key, row.id);
+    try {
+      const content = await decryptContent(key, row.iv, row.cipher);
+      if (content.checked) await deleteLocalItem(db, key, row.id);
+    } catch {
+      // fail closed (mirror displayItems): drop an undecryptable row so one corrupt
+      // row can't abort "Clear checked". It will be re-pulled on the next sync.
+      await db.items.delete(row.id);
+    }
   }
 }
 
