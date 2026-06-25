@@ -120,7 +120,7 @@ describe("content encryption", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm test -- tests/offline/crypto.test.ts` *(note: the trailing path filters files; do NOT add `--` before the path in a way that runs the whole suite — `pnpm test tests/offline/crypto.test.ts` also works. Verify only this file's tests run.)*
+Run: `pnpm test tests/offline/crypto.test.ts` *(pass the path with NO `--`; the project's Phase-4 lesson: `pnpm test -- <path>` runs the WHOLE suite and false-greens a TDD red step.)*
 Expected: FAIL — `Cannot find module '@/lib/offline/crypto'`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -465,7 +465,7 @@ git commit -m "feat: add guarded sign-out decision for the offline store"
 
 **Files:**
 - Create: `lib/validation/sync.ts`
-- Modify: `lib/validation/shopping-list.ts` (export the category enum if it is not already exported, so it is reused here — do NOT redefine the category list)
+- Modify: `lib/validation/shopping-list.ts` (add `export const categorySchema = z.enum(CATEGORIES)` — the file currently has only an unexported `const category`; reuse it, do NOT redefine the category list)
 - Test: `tests/validation/sync.test.ts`
 
 **Interfaces:**
@@ -533,7 +533,7 @@ Expected: FAIL — module not found.
 ```ts
 // lib/validation/sync.ts
 import { z } from "zod";
-import { categorySchema } from "./shopping-list"; // export it from shopping-list.ts if not already
+import { categorySchema } from "./shopping-list"; // requires `export const categorySchema = z.enum(CATEGORIES)` there
 
 const iso = z.string().refine((s) => !Number.isNaN(Date.parse(s)), "invalid ISO timestamp");
 
@@ -557,7 +557,7 @@ export const syncInputSchema = z.object({
 export type SyncInput = z.infer<typeof syncInputSchema>;
 ```
 
-If `categorySchema` does not exist in `lib/validation/shopping-list.ts`, add it there (reusing the exact values already used by `addItemSchema`) and import it — do not duplicate the list.
+**Required edit in `lib/validation/shopping-list.ts`:** it currently has an unexported `const category = z.enum(CATEGORIES)`. Add `export const categorySchema = z.enum(CATEGORIES);` (reuse the existing `CATEGORIES` exported from `lib/shopping/types.ts`) and use `categorySchema` in `addItemSchema`/`editItemSchema` in place of the local `category` (or set `const category = categorySchema`). Then import `categorySchema` in `sync.ts`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -679,6 +679,29 @@ it("sync_shopping_items applies last-edit-wins for the owner", async () => {
     id, list_id: aList.id, name: "STALE", quantity: "1", category: "dairy",
     fdc_id: null, checked: false, deleted_at: null, edited_at: "2026-06-25T09:00:00.000Z",
   }]});
+
+  const { data } = await a.client.from("shopping_list_items").select("name").eq("id", id).single();
+  expect(data?.name).toBe("Milk");
+});
+
+it("sync_shopping_items: user B cannot UPDATE an existing item in user A's list (ON CONFLICT path)", async () => {
+  const a = await makeUser("alice");
+  const b = await makeUser("bob");
+  const aList = await getOrCreateDefaultListFor(a);
+  const id = crypto.randomUUID();
+
+  // A creates the item.
+  await a.client.rpc("sync_shopping_items", { p_items: [{
+    id, list_id: aList.id, name: "Milk", quantity: "1", category: "dairy",
+    fdc_id: null, checked: false, deleted_at: null, edited_at: "2026-06-25T10:00:00.000Z",
+  }]});
+
+  // B tries to hijack it via ON CONFLICT DO UPDATE with a newer edit time.
+  const { error } = await b.client.rpc("sync_shopping_items", { p_items: [{
+    id, list_id: aList.id, name: "HIJACK", quantity: "1", category: "dairy",
+    fdc_id: null, checked: false, deleted_at: null, edited_at: "2026-06-25T12:00:00.000Z",
+  }]});
+  expect(error).not.toBeNull(); // UPDATE USING/WITH CHECK rejects — B does not own the list
 
   const { data } = await a.client.from("shopping_list_items").select("name").eq("id", id).single();
   expect(data?.name).toBe("Milk");
@@ -809,7 +832,10 @@ git commit -m "feat: add getChangesSince DAL and syncShoppingList server action"
   - `loadOrCreateKey(db: ListDb): Promise<CryptoKey>`
   - `deleteListDb(userId: string): Promise<void>`
   - `deleteForeignDbs(currentUserId: string): Promise<void>` (best-effort; no-op where `indexedDB.databases()` is unavailable)
+  - `getOrInitListId(db: ListDb): Promise<string>` (stored-or-minted default list id; used by Task 12)
   - constant `EPOCH_CURSOR = "1970-01-01T00:00:00.000Z"`
+
+**Isolation note:** the plan deliberately does **not** persist an `ownerId` in `meta` (the spec §3.7 mentions one). The per-user DB name `ns-list-<userId>` already scopes data, and `deleteForeignDbs` purges any non-matching DB on boot — name-based cleanup is sufficient and simpler. (A spec erratum records this.)
 
 **Verification:** `pnpm typecheck && pnpm lint && pnpm build` (Dexie is not unit-tested per the spec's no-IndexedDB-infra rule).
 
@@ -871,8 +897,26 @@ export async function loadOrCreateKey(db: ListDb): Promise<CryptoKey> {
   const existing = await db.keyv.get("aes");
   if (existing) return existing.key;
   const key = await generateContentKey();
-  await db.keyv.put({ id: "aes", key }); // non-extractable CryptoKey stored structured-clone
+  try {
+    await db.keyv.put({ id: "aes", key }); // non-extractable CryptoKey stored via structured clone
+  } catch (e) {
+    throw new Error(
+      "This browser cannot persist the encryption key in IndexedDB; offline mode is unavailable. " +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
   return key;
+}
+
+// Stored-or-freshly-minted default list id. An offline-minted id reconciles to
+// the server's real default list on first sync (server get-or-create idempotency
+// + the shopping_lists_one_default unique index); a two-tab race is harmless.
+export async function getOrInitListId(db: ListDb): Promise<string> {
+  const existing = await db.meta.get("defaultListId");
+  if (existing) return existing.value;
+  const id = crypto.randomUUID();
+  await db.meta.put({ key: "defaultListId", value: id });
+  return id;
 }
 
 export async function deleteListDb(userId: string): Promise<void> {
@@ -1000,26 +1044,26 @@ async function mutateContent(
   );
 }
 
-export function toggleLocalItem(db: ListDb, key: CryptoKey, id: string, checked: boolean) {
-  return mutateContent(db, key, id, (c) => ({ ...c, checked }));
+export async function toggleLocalItem(db: ListDb, key: CryptoKey, id: string, checked: boolean): Promise<void> {
+  await mutateContent(db, key, id, (c) => ({ ...c, checked }));
 }
 
-export function editLocalItem(
+export async function editLocalItem(
   db: ListDb,
   key: CryptoKey,
   id: string,
   patch: Partial<Pick<ContentFields, "name" | "quantity" | "category">>,
-) {
-  return mutateContent(db, key, id, (c) => ({ ...c, ...patch }));
+): Promise<void> {
+  await mutateContent(db, key, id, (c) => ({ ...c, ...patch }));
 }
 
-export function deleteLocalItem(db: ListDb, key: CryptoKey, id: string) {
-  return mutateContent(db, key, id, (c) => c, nowIso());
+export async function deleteLocalItem(db: ListDb, key: CryptoKey, id: string): Promise<void> {
+  await mutateContent(db, key, id, (c) => c, nowIso());
 }
 
 export async function clearCheckedLocal(db: ListDb, key: CryptoKey): Promise<void> {
-  const rows = await db.items.where("deletedAt").equals(null as never).toArray()
-    .catch(async () => (await db.items.toArray()).filter((r) => r.deletedAt === null));
+  // Dexie cannot index null, so full-scan and filter in memory (same as displayItems).
+  const rows = (await db.items.toArray()).filter((r) => r.deletedAt === null);
   for (const row of rows) {
     const content = await decryptContent(key, row.iv, row.cipher);
     if (content.checked) await deleteLocalItem(db, key, row.id);
@@ -1050,7 +1094,7 @@ export async function displayItems(db: ListDb, key: CryptoKey): Promise<Shopping
 }
 ```
 
-*(Confirm the exact `ShoppingListItem` field names against `lib/shopping/types.ts` — adjust `createdAt` if the type differs. `clearCheckedLocal`'s `.where("deletedAt").equals(null)` falls back to a full-scan filter because Dexie cannot index `null`; keep the fallback.)*
+*(Confirm the exact `ShoppingListItem` field names against `lib/shopping/types.ts` — adjust `createdAt` if the type differs.)*
 
 - [ ] **Step 2: Verify**
 
@@ -1122,14 +1166,24 @@ export async function runSync(db: ListDb, key: CryptoKey): Promise<void> {
     const cursor = await readCursor(db);
     const result = await syncShoppingList({ dirtyItems, cursor });
 
-    // 3. Mark pushed rows known (the echo below clears their dirty flag).
+    // 3. Clear dirty on pushed rows — but ONLY if the row has not been edited
+    //    again locally since we snapshotted it (editedAt unchanged). A row edited
+    //    mid-sync stays dirty and re-pushes next run. This must NOT rely on the
+    //    pulled echo to clear dirty: the echo carries the same edited_at we pushed,
+    //    so reconcile() (strict >) would return "keep-local" and dirty would never
+    //    clear. Clearing dirty here flips reconcile to the "overwrite" branch so
+    //    the echo can stamp the server updated_at onto the row.
     await db.transaction("rw", db.items, async () => {
       for (const r of dirty) {
-        await db.items.update(r.id, { serverKnown: 1 });
+        const cur = await db.items.get(r.id);
+        if (cur && cur.editedAt === r.editedAt) {
+          await db.items.update(r.id, { dirty: 0, serverKnown: 1 });
+        }
       }
     });
 
-    // 4. Reconcile pulled rows.
+    // 4. Reconcile pulled rows (incl. the echo of just-pushed rows — now dirty:0,
+    //    so reconcile overwrites them with the server-stamped updated_at).
     await applyServerChanges(db, key, result.items);
 
     // 5. Advance cursor.
@@ -1155,6 +1209,15 @@ async function applyServerChanges(db: ListDb, key: CryptoKey, items: ServerItemR
       deletedAt: s.deleted_at, dirty: 0, serverKnown: 1, iv, cipher,
     };
     await db.items.put(row);
+  }
+
+  // Converge on the server's real default list id once items are known
+  // (replaces any client-minted offline id from getOrInitListId).
+  if (items.length > 0) {
+    const existing = await db.meta.get("defaultListId");
+    if (!existing) {
+      await db.meta.put({ key: "defaultListId", value: items[0].list_id });
+    }
   }
 }
 ```
@@ -1185,7 +1248,7 @@ git commit -m "feat: add foreground sync engine for the offline list"
 - Produces:
   - `useOnlineStatus(): boolean`
   - `OfflineProvider({ userId, children })` — React client provider.
-  - `useOffline(): { db: ListDb; cryptoKey: CryptoKey; online: boolean; syncing: boolean; pending: number; sync: () => void; signOutAndWipe: () => Promise<void> }` (context hook; throws if used outside the provider).
+  - `useOffline()` returns a discriminated union — `{ status: "ready"; db; cryptoKey; online; syncing; pending; sync; signOutAndWipe }` or `{ status: "error"; error; online; signOutAndWipe }` (context hook; throws if used outside the provider). Consumers branch on `status`.
 
 **Notes:** The provider opens the per-user DB once, loads/creates the key, runs `deleteForeignDbs(userId)` on mount, wires foreground triggers (initial-when-online, `online` event, `visibilitychange`→visible), and runs `runSync` debounced after local changes (expose `sync()` that components call after a mutation). `signOutAndWipe` reads `getDirtyCount` + `useOnlineStatus`, applies `signOutDecision`, and for `sync-then-wipe`/`confirm-then-wipe`/`wipe` performs: (sync) → (confirm via `window.confirm`) → `deleteListDb(userId)` → navigate to `/auth/signout`. Use **render-time** state only; the trigger wiring belongs in event listeners registered imperatively (allowed — these are real browser events, not derived state). Verification: typecheck/lint/build + e2e.
 
@@ -1225,7 +1288,8 @@ import { runSync, getDirtyCount } from "./sync";
 import { signOutDecision } from "./signout-decision";
 import { useOnlineStatus } from "./useOnlineStatus";
 
-type OfflineCtx = {
+type OfflineReady = {
+  status: "ready";
   db: ListDb;
   cryptoKey: CryptoKey;
   online: boolean;
@@ -1234,6 +1298,13 @@ type OfflineCtx = {
   sync: () => void;
   signOutAndWipe: () => Promise<void>;
 };
+type OfflineError = {
+  status: "error";
+  error: string;
+  online: boolean;
+  signOutAndWipe: () => Promise<void>;
+};
+type OfflineCtx = OfflineReady | OfflineError;
 
 const Ctx = createContext<OfflineCtx | null>(null);
 
@@ -1246,6 +1317,7 @@ export function useOffline(): OfflineCtx {
 export function OfflineProvider({ userId, children }: { userId: string; children: React.ReactNode }) {
   const online = useOnlineStatus();
   const [ready, setReady] = useState<{ db: ListDb; cryptoKey: CryptoKey } | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [pending, setPending] = useState(0);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1256,9 +1328,13 @@ export function OfflineProvider({ userId, children }: { userId: string; children
     let cancelled = false;
     const db = openListDb(userId);
     (async () => {
-      await deleteForeignDbs(userId);
-      const cryptoKey = await loadOrCreateKey(db);
-      if (!cancelled) setReady({ db, cryptoKey });
+      try {
+        await deleteForeignDbs(userId);
+        const cryptoKey = await loadOrCreateKey(db);
+        if (!cancelled) setReady({ db, cryptoKey });
+      } catch (e) {
+        if (!cancelled) setSetupError(e instanceof Error ? e.message : String(e));
+      }
     })();
     return () => {
       cancelled = true;
@@ -1310,9 +1386,25 @@ export function OfflineProvider({ userId, children }: { userId: string; children
     window.location.assign("/auth/signout");
   }, [ready, doSync, userId]);
 
+  // Setup failed (e.g. a browser that cannot persist the key): keep the rest of
+  // the app working online-only; /list and the sign-out control read status === "error".
+  if (setupError) {
+    return (
+      <Ctx.Provider
+        value={{
+          status: "error",
+          error: setupError,
+          online,
+          signOutAndWipe: async () => { window.location.assign("/auth/signout"); },
+        }}
+      >
+        {children}
+      </Ctx.Provider>
+    );
+  }
   if (!ready) return null; // brief: DB opening + key load
   return (
-    <Ctx.Provider value={{ db: ready.db, cryptoKey: ready.cryptoKey, online, syncing, pending, sync, signOutAndWipe }}>
+    <Ctx.Provider value={{ status: "ready", db: ready.db, cryptoKey: ready.cryptoKey, online, syncing, pending, sync, signOutAndWipe }}>
       {children}
     </Ctx.Provider>
   );
@@ -1362,7 +1454,7 @@ git commit -m "feat: add offline provider with foreground sync triggers and guar
 **Interfaces:**
 - Consumes: `useOffline` (Task 11); `useLiveQuery` (`dexie-react-hooks`); `displayItems`, `addLocalItem`, `toggleLocalItem`, `editLocalItem`, `deleteLocalItem`, `clearCheckedLocal` (Task 9); `groupItems` (`lib/shopping/group.ts`); the default `listId`.
 
-**Notes on the default list id:** offline, the client needs a `listId` for new items. On first online sync, `getChangesSince` returns the user's items (each carries `list_id`); persist that into `meta` (`defaultListId`). If the store is empty and offline with no known list id, mint a client UUID for the default list and store it in `meta` — the server's `getOrCreateDefaultList` idempotency + the unique index reconcile it on first sync. (Implementation detail: add `defaultListId` handling to `OfflineProvider`/`items` — fold a tiny helper `getOrInitListId(db)` into `lib/offline/db.ts` returning a stored or freshly-minted-and-stored UUID.)
+**Notes on the default list id:** offline, the client needs a `listId` for new items. On first online sync, `getChangesSince` returns the user's items (each carries `list_id`); persist that into `meta` (`defaultListId`). If the store is empty and offline with no known list id, mint a client UUID for the default list and store it in `meta` — the server's `getOrCreateDefaultList` idempotency + the unique index reconcile it on first sync. (Implementation detail: `getOrInitListId(db)` lives in `lib/offline/db.ts` from Task 8; `applyServerChanges` in Task 10 converges `meta.defaultListId` onto the server's real list id on first pull.)
 
 - [ ] **Step 1: Data-free `page.tsx`**
 
@@ -1393,8 +1485,21 @@ import {
 import { groupItems } from "@/lib/shopping/group";
 
 export function ListView() {
-  const { db, cryptoKey, online, syncing, pending, sync } = useOffline();
-  const items = useLiveQuery(() => displayItems(db, cryptoKey), [db, cryptoKey], []);
+  // All hooks run unconditionally (rules of hooks); branch on status AFTER them.
+  const off = useOffline();
+  const ready = off.status === "ready" ? off : null;
+  const items = useLiveQuery(
+    () => (ready ? displayItems(ready.db, ready.cryptoKey) : Promise.resolve([])),
+    [ready],
+    [],
+  );
+
+  if (off.status !== "ready") {
+    // Offline storage unavailable in this browser — show a notice, never a crash.
+    // (Branch on off.status, not `ready`, so TS narrows off to the error variant.)
+    return <SyncStatus online={off.online} syncing={false} pending={0} error={off.error} />;
+  }
+  const { db, cryptoKey, online, syncing, pending, sync } = off;
   const groups = groupItems(items ?? []);
 
   async function withSync(fn: () => Promise<void>) {
@@ -1419,26 +1524,15 @@ export function ListView() {
 }
 ```
 
-Add a small presentational `SyncStatus` (offline · syncing · synced · `N pending`) — a few spans with the dark-editorial tokens; no new dependency. Remove the old `useState(initialItems)` mirror, the render-time reset, and all calls to the deleted Phase-3 server actions.
+Add a small presentational `SyncStatus` (offline · syncing · synced · `N pending`, plus an optional `error?: string` prop that renders an "Offline list unavailable" notice) — a few spans with the dark-editorial tokens; no new dependency. Remove the old `useState(initialItems)` mirror, the render-time reset, and all calls to the deleted Phase-3 server actions.
 
 - [ ] **Step 3: `ItemSheet.tsx` submits via the local helper**
 
 Change `ItemSheet`'s `onSubmit` to call the `onAdd`/`onEdit` handlers passed from `ListView` (it already takes a submit callback — keep the signature, just point it at the local-write path). No `revalidatePath`, no server action import remains in this file.
 
-- [ ] **Step 4: Add `getOrInitListId` to `lib/offline/db.ts`**
+- [ ] **Step 4: Confirm `getOrInitListId` + server-id convergence are in place**
 
-```ts
-// lib/offline/db.ts (add)
-export async function getOrInitListId(db: ListDb): Promise<string> {
-  const existing = await db.meta.get("defaultListId");
-  if (existing) return existing.value;
-  const id = crypto.randomUUID();
-  await db.meta.put({ key: "defaultListId", value: id });
-  return id;
-}
-```
-
-When `applyServerChanges` (Task 10) writes pulled items, also persist their `list_id` into `meta.defaultListId` if not set, so the client converges on the server's real default list id. Add that one-liner to `applyServerChanges`.
+No new code here. `getOrInitListId` was defined in **Task 8** (`lib/offline/db.ts`), and the default-list-id convergence was added to `applyServerChanges` in **Task 10**. Verify both exist and that `ListView.tsx` (Step 2) imports `getOrInitListId` from `@/lib/offline/db`. If either is missing, add it from Task 8 / Task 10 before continuing.
 
 - [ ] **Step 5: Verify**
 
@@ -1448,7 +1542,7 @@ Expected: green. Confirm no remaining import of the removed Phase-3 actions anyw
 - [ ] **Step 6: Commit**
 
 ```bash
-git add "app/(app)/list/page.tsx" "app/(app)/list/ListView.tsx" "app/(app)/list/ItemSheet.tsx" lib/offline/db.ts lib/offline/sync.ts
+git add "app/(app)/list/page.tsx" "app/(app)/list/ListView.tsx" "app/(app)/list/ItemSheet.tsx"
 git commit -m "feat: make the shopping list local-first over the encrypted store"
 ```
 
@@ -1505,7 +1599,7 @@ git commit -m "feat: guard sign-out to flush or confirm unsynced offline edits"
 **Interfaces:**
 - Consumes: `serwist` (`NetworkFirst`, already-imported `NetworkOnly`).
 
-**Notes:** The `/list` shell is data-free (Task 12), so caching its HTML stores no authenticated data — the privacy invariant holds. Online, `NetworkFirst` serves the fresh shell and revalidates the cache; offline, it serves the cached shell; if `/list` was never visited online, the existing document fallback serves `/~offline`. Verification: `pnpm build` emits `/sw.js`; manual e2e canary confirms offline `/list` loads.
+**Notes:** The `/list` shell is data-free (Task 12), so caching its HTML stores no authenticated data — the privacy invariant holds. Online, `NetworkFirst` serves the fresh shell and revalidates the cache; offline, it serves the cached shell; if `/list` was never visited online, the existing document fallback serves `/~offline`. Verification: `pnpm build` emits `/sw.js`; manual e2e canary confirms offline `/list` loads. **Before relying on the cache, confirm the `(app)` layout + `SideNav` render no user-identifying content (email/name) into the `/list` shell** — they currently render only brand + nav (verified); if user identity is ever added, exclude it from the `/list` shell so the cached document stays PII-free.
 
 - [ ] **Step 1: Add the `/list` runtime route**
 
