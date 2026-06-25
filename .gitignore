@@ -8,6 +8,11 @@ out/
 next-env.d.ts
 *.tsbuildinfo
 
+# serwist (generated at build)
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+
 # env — never commit secrets
 .env
 .env.*

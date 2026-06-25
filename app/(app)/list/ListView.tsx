@@ -84,6 +84,7 @@ export function ListView({ initialItems }: { initialItems: ShoppingListItem[] })
         <p className="py-12 text-center text-sm text-muted">Nothing on the list yet.</p>
       ) : null}
 
+      <div className="lg:grid lg:grid-cols-2 lg:gap-x-6 xl:grid-cols-3">
       {groups.map((group) => (
         <section key={group.category} className="mb-4">
           <h2 className="mb-1 text-[11px] uppercase tracking-wide text-muted">{CATEGORY_LABEL[group.category]}</h2>
@@ -100,6 +101,7 @@ export function ListView({ initialItems }: { initialItems: ShoppingListItem[] })
           </ul>
         </section>
       ))}
+      </div>
 
       {checked.length > 0 ? (
         <section className="mb-4">

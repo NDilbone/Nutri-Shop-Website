@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { updateSession } from "@/lib/supabase/proxy-session";
-
-const PUBLIC_PATHS = ["/login", "/signup", "/auth"];
+import { buildCsp } from "@/lib/security/csp";
+import { isPublicPath } from "@/lib/security/public-paths";
 
 export async function proxy(request: NextRequest) {
   const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -10,21 +10,7 @@ export async function proxy(request: NextRequest) {
 
   // 1) per-request CSP nonce (set on the REQUEST headers so Next stamps scripts)
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
-  const supaWss = supaUrl.replace(/^http/, "ws");
-  const csp = [
-    `default-src 'self'`,
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""}`,
-    // dev: React/Next emit nonce-less inline styles → relax; prod: nonce only
-    `style-src 'self' ${isDev ? "'unsafe-inline'" : `'nonce-${nonce}'`}`,
-    `img-src 'self' blob: data:`,
-    `font-src 'self'`,
-    `connect-src 'self' ${supaUrl} ${supaWss}`, // wss for Supabase Realtime/auth
-    `object-src 'none'`,
-    `base-uri 'self'`,
-    `form-action 'self'`,
-    `frame-ancestors 'none'`,
-    `upgrade-insecure-requests`,
-  ].join("; ");
+  const csp = buildCsp(nonce, { dev: isDev }, supaUrl);
 
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
@@ -36,8 +22,7 @@ export async function proxy(request: NextRequest) {
 
   // 3) optimistic redirects
   const { pathname } = request.nextUrl;
-  const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
-  if (!userId && !isPublic) {
+  if (!userId && !isPublicPath(pathname)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
@@ -54,7 +39,8 @@ export async function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     {
-      source: "/((?!api|_next/static|_next/image|favicon.ico|manifest.webmanifest).*)",
+      // also excludes sw.js so the service worker file is never auth-gated/redirected
+      source: "/((?!api|_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js).*)",
       missing: [
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },

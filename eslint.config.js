@@ -24,7 +24,19 @@ const config = [
       ],
     },
   },
-  { ignores: [".next/", "node_modules/", "supabase/.branches/", ".remember/", ".superpowers/"] },
+  {
+    ignores: [
+      ".next/",
+      "node_modules/",
+      "supabase/.branches/",
+      ".remember/",
+      ".superpowers/",
+      // serwist-generated service worker bundle (built artifact, not source)
+      "public/sw.js",
+      "public/sw.js.map",
+      "public/swe-worker-*.js",
+    ],
+  },
 ];
 
 export default config;

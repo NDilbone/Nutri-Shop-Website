@@ -14,8 +14,10 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   return (
     <main>
       <DateNav date={parsed.data} />
-      <TodayView data={day} />
-      <NutritionPanel totals={day.totals} />
+      <div className="lg:grid lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:items-start lg:gap-6">
+        <TodayView data={day} />
+        <NutritionPanel totals={day.totals} />
+      </div>
     </main>
   );
 }

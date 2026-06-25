@@ -12,8 +12,29 @@ Next.js 16 (App Router) · Supabase (Postgres + Auth, Row Level Security) · Typ
 4. Start Supabase locally (for tests): `supabase start`
 5. `pnpm dev` → http://localhost:3000
 
+## PWA (Phase 4)
+
+Nutri-Shop is an installable Progressive Web App.
+
+- **Android / desktop Chromium (Chrome, Edge, Brave):** an install button appears in the app shell when the browser fires `beforeinstallprompt`. Click it to install natively. The URL-bar install icon works as usual.
+- **iOS Safari:** a hint prompts you to use Share → "Add to Home Screen". (iOS does not support `beforeinstallprompt`.)
+- **Offline fallback:** when a document navigation fails offline the service worker serves a branded `/~offline` page. The SW caches **only static build assets and `/~offline`** — no authenticated HTML, RSC payloads, or API responses are ever stored.
+
+### Icons
+
+Icons live in `public/icons/` and are generated from a single master file:
+
+```bash
+pnpm gen:icons          # regenerates public/icons/* from assets/icon-master.svg
+```
+
+To rebrand: replace `assets/icon-master.svg` with your own 512×512 SVG and re-run `pnpm gen:icons`. Commit the generated PNGs.
+
 ## Scripts
-- `pnpm dev` / `pnpm build` / `pnpm start`
+- `pnpm dev` — development server (Turbopack; service worker disabled in dev)
+- `pnpm build` — production build (`next build --webpack`; **webpack is required** — Serwist's SW plugin does not run under Next 16's default Turbopack bundler). Emits `public/sw.js`.
+- `pnpm start` — serve the production build locally (SW active; use this to test offline behaviour)
+- `pnpm gen:icons` — regenerate PWA icons from `assets/icon-master.svg`
 - `pnpm lint` · `pnpm typecheck` · `pnpm test`
 
 ## Food API (Phase 1)
