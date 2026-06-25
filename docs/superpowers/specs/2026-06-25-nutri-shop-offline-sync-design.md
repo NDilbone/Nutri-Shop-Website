@@ -36,6 +36,7 @@ A logged-in user opens the installed app in a store with no signal, sees their c
 | Local store engine | **`dexie` + `dexie-react-hooks`** (both pinned to latest stable at install — verify on npm). | The phase was planned around Dexie; a maintained IndexedDB wrapper with a reactive `useLiveQuery` fits "minimize custom code." Raw IndexedDB rejected (more hand-rolled glue). |
 | Encryption | **AES-GCM, content fields encrypted at rest**; key is a **non-extractable `CryptoKey`** generated via Web Crypto, stored in the DB's keyval store. | Owner chose encrypt-at-rest; non-extractable key defends against casual inspection, other extensions/origins, profile-backup leakage, and forensic-lite recovery — at zero UX cost. (No client scheme defends against malware running as the user; that is out of scope for any browser app.) |
 | Store lifecycle | **Per-user DB** (`ns-list-<userId>`); **deleted on sign-out and on user-switch**. | Keeps one user's list off another's session on the same device; bounds the blast radius of the local store. |
+| Sign-out safety | **Warn / sync-first on sign-out with unsynced edits:** push pending changes when online, or require an explicit confirm when offline, before wiping. | The local store is wiped on sign-out; unsynced edits must never vanish silently. |
 | Conflict resolution | **Last-edit-wins by client `edited_at`.** | Owner's pick. Respects real edit order even when a stale edit syncs later. Adds never conflict (client-minted UUID). |
 | Two timestamps | **`updated_at` = server time (pull cursor); `edited_at` = client time (conflict tiebreak).** | Server-time cursor is immune to device clock skew (reliable "what changed since I pulled"); client-time `edited_at` honors the real-world edit order the user cares about. |
 | Sync mechanism | **One `security invoker` RPC** does the batched last-edit-wins upsert; a Server Action wraps push (RPC) + pull (`getChangesSince`) in one round trip. | Atomic LWW, minimal client branching, **RLS still gates every row** (no privilege escalation, no service-role). |
@@ -134,8 +135,13 @@ Triggered (all foreground) by: app launch when `navigator.onLine`, the `online` 
 
 **Re-auth:** `syncShoppingList` calls `requireUser()` at the boundary; the cookie rides along automatically. If the session has expired, the action throws an auth error → the engine stops, leaves all rows `dirty` (nothing lost), and the UI surfaces a "sign in to sync" affordance. After re-login a trigger fires and the queue drains.
 
-### 3.7 Sign-out & user-switch (must wipe the local store)
-Server sign-out cannot clear client IndexedDB, so sign-out becomes a **client-wrapped** flow: a small client handler `await db.delete()` (drops the entire `ns-list-<userId>` DB, key included) **then** navigates to the existing `/auth/signout` route. On app boot, the shell also deletes any `ns-list-*` database whose `ownerId` ≠ the current session user (defense against an interrupted sign-out and against user-switch on a shared device). The current `userId` is passed from the `(app)` layout (it is the user's own id from their session — not sensitive) into a small client provider that owns the DB handle.
+### 3.7 Sign-out & user-switch (wipe the local store — safely)
+Server sign-out cannot clear client IndexedDB, so sign-out is a **client-wrapped** flow that guards unsynced work first:
+1. **No `dirty` rows** → wipe and sign out immediately (no friction — the common case).
+2. **Dirty rows + online** → run one sync (push) first; on success, wipe and sign out.
+3. **Dirty rows + offline (or the push failed)** → warn *"N unsynced change(s) will be lost"* and require an explicit confirm; confirm → wipe and sign out, cancel → stay signed in.
+
+The wipe itself is `await db.delete()` (drops the entire `ns-list-<userId>` DB, encryption key included), **then** navigation to the existing `/auth/signout` route. On app boot the shell also deletes any `ns-list-*` database whose stored `ownerId` ≠ the current session user (defense against an interrupted sign-out and against user-switch on a shared device). The current `userId` is passed from the `(app)` layout (the user's own id from their session — not sensitive) into the client provider that owns the DB handle. The pure decision — `(dirtyCount, online)` → `wipe | sync-then-wipe | confirm-then-wipe` — is unit-tested (§7).
 
 ### 3.8 Server / DB changes — migration `0005_offline_sync.sql`
 Additive, safe, and the **first schema change since Phase 3** (so `db-migrate.yml` and `rls.yml` run this phase — they were path-skipped in Phase 4):
@@ -229,6 +235,7 @@ A small, quiet status surface (in the `/list` header on phone; in the sidebar ra
 - **Per-item:** an unsynced row shows a subtle "pending" dot; it clears when the row reaches `serverKnown = 1`.
 - **Conflicts:** auto-resolved by last-edit-wins, silent by default; if one of *your* local edits was superseded by a newer edit from your other device, an optional brief toast ("Updated from your other device") — no modal, no decision asked.
 - **Auth-expired:** an inline "Sign in to sync — your changes are saved" affordance; never blocks local editing.
+- **Sign-out with pending:** if unsynced edits exist, sign-out pushes them first (online) or warns and asks to confirm (offline) before clearing — never a silent loss (§3.7).
 
 (The visual treatment of this status surface is the one genuinely visual question in the phase; it can be mocked in the browser companion during planning if the owner wants to refine it.)
 
@@ -242,6 +249,7 @@ A small, quiet status surface (in the `/list` header on phone; in the sidebar ra
 - the **dirty-row collector / payload shaper**: maps Dexie rows → server payload (snake_case, nulls, ISO timestamps) correctly.
 - **cursor advance**: monotonic; never regresses on an empty pull; handles same-millisecond rows idempotently.
 - `lib/validation/sync.ts`: rejects oversized names/quantities, bad category enum, non-UUID ids, non-ISO timestamps.
+- the **sign-out guard** decision (pure): `(dirtyCount, online)` → `wipe` (none dirty) · `sync-then-wipe` (dirty + online) · `confirm-then-wipe` (dirty + offline); a cancelled confirm leaves the user signed in.
 - SW shape (`tests/pwa/…`): the `/list` runtime route is `NetworkFirst` and scoped to `/list`; other navigations stay `NetworkOnly`; the cached-`/list` invariant assertion (no item markers).
 
 **RLS integration (`rls.yml`, live local Supabase):** extend the existing isolation suite to drive `sync_shopping_items` and `getChangesSince` **as two different users** — user B cannot upsert into user A's list (RLS rejects), cannot pull A's rows, and a tombstone from A never appears for B. Confirms the RPC introduces no cross-user path. (Restores/extends the fail-closed `REQUIRE_SUPABASE_TESTS=1` path.)
@@ -251,6 +259,7 @@ A small, quiet status surface (in the `/list` header on phone; in the sidebar ra
 - **Reconnect:** turn the network on → within a trigger the list syncs; the server (and the user's other device) reflects every change; `pending` clears.
 - **Two-device LWW:** edit the same item on phone (offline) and desktop (online); on the phone's reconnect, the newer real-world edit wins; the superseded side shows the quiet toast; no item is silently lost.
 - **Privacy:** DevTools → Application → IndexedDB shows the `items` content as ciphertext (no plaintext names); Cache Storage shows only static assets, `/~offline`, and the data-free `/list` shell — no authed JSON. Sign out → the `ns-list-<userId>` DB is gone.
+- **Sign-out with pending:** make an offline edit, then sign out → warned that N unsynced change(s) will be lost; cancel keeps you signed in with the edit intact; confirm wipes and signs out. Online sign-out with pending pushes first, then wipes.
 - **Auth-expired:** let the session lapse offline, make edits, reconnect → the "sign in to sync" affordance appears, edits are retained, and they sync after re-login.
 
 ---
@@ -269,6 +278,7 @@ A small, quiet status surface (in the `/list` header on phone; in the sidebar ra
 | Dexie/`dexie-react-hooks` version drift from "latest stable." | Pin both to the current stable at install (verify on npm); they are mature, App-Router-compatible libraries. |
 | iOS Safari PWA storage eviction (IndexedDB can be cleared under storage pressure). | Acceptable: the server is the durable source; an evicted store simply re-pulls on next online launch. No unsynced data is uniquely held once `dirty` rows have pushed; document the "sync before clearing space" reality. |
 | Encryption corruption / key loss makes a row unreadable. | `decryptContent` fails closed → drop the row and re-pull from the server (authoritative). No crash into the UI. |
+| Sign-out wipes unsynced edits silently. | Sign-out is guarded: push-first when online, explicit confirm when offline, immediate only when nothing is `dirty` (§3.7); unit-tested decision + e2e. |
 
 ---
 
