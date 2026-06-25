@@ -49,20 +49,28 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("shopping_list RLS isolation", () => {
 
   it("a user CANNOT update another user's item", async () => {
     const ins = await userA.from("shopping_list_items").insert({ list_id: listAId, name: "Eggs" }).select("id").single();
-    await userB.from("shopping_list_items").update({ name: "hacked" }).eq("id", ins.data!.id);
+    const { data: updated, error: updErr } = await userB
+      .from("shopping_list_items").update({ name: "hacked" }).eq("id", ins.data!.id).select();
+    expect(updErr).toBeNull();      // RLS denies silently: no error
+    expect(updated).toHaveLength(0); // 0 rows affected
     const { data } = await userA.from("shopping_list_items").select("name").eq("id", ins.data!.id).single();
     expect(data!.name).not.toBe("hacked");
   });
 
   it("a user CANNOT delete another user's item", async () => {
     const ins = await userA.from("shopping_list_items").insert({ list_id: listAId, name: "Bread" }).select("id").single();
-    await userB.from("shopping_list_items").delete().eq("id", ins.data!.id); // RLS USING denies → 0 rows affected
+    const { data: deleted, error: delErr } = await userB
+      .from("shopping_list_items").delete().eq("id", ins.data!.id).select(); // RLS USING denies → 0 rows affected
+    expect(delErr).toBeNull();
+    expect(deleted).toHaveLength(0);
     const { data } = await userA.from("shopping_list_items").select("id").eq("id", ins.data!.id).single();
     expect(data).not.toBeNull(); // still there, read back as the owner
   });
 
   it("a user CANNOT delete another user's list", async () => {
-    await userB.from("shopping_lists").delete().eq("id", listAId);
+    const { data: deleted, error: delErr } = await userB.from("shopping_lists").delete().eq("id", listAId).select();
+    expect(delErr).toBeNull();
+    expect(deleted).toHaveLength(0);
     const { data } = await userA.from("shopping_lists").select("id").eq("id", listAId).single();
     expect(data).not.toBeNull();
   });
