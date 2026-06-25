@@ -181,7 +181,7 @@ One thin action per DAL op, using the Phase-2 `ActionResult = { ok: true } | { e
 `addItemAction`, `editItemAction`, `toggleItemAction`, `deleteItemAction`, `clearCheckedAction`.
 
 ### Grouping helper — `lib/shopping/group.ts` (pure)
-Takes flat items → groups by category in **aisle order** `[produce, meat, dairy, bakery, frozen, pantry, beverages, household, other]`; a `null` category falls into `other`. Within each group: **unchecked before checked**, each sub-sorted by `created_at` ascending. This produces the "checked items struck-through at the bottom" layout. Pure and unit-tested in isolation from the DB.
+Takes flat items → returns `{ groups, checked }`. **`groups`** = the *unchecked* items grouped by category in **aisle order** `[produce, meat, dairy, bakery, frozen, pantry, beverages, household, other]` (a `null` category falls into `other`; empty groups omitted), each group sub-sorted by `created_at` ascending. **`checked`** = all checked items in one flat list, also `created_at` ascending — rendered as the single struck-through "Checked" section at the bottom. Pure and unit-tested in isolation from the DB.
 
 ---
 
