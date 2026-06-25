@@ -290,6 +290,7 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 ---
 
 ## 9. Open items (non-blocking)
-- **Owner art** for `assets/icon-master.svg` — placeholder until provided; swap is code-free.
+- **`source-map@0.8.0-beta.0` transitive pre-release** — pulled in by `@serwist/build@9.5.11` (the latest *stable* serwist). It is build-only (never shipped to the client or SW runtime), and `@serwist/build` hard-requires the beta, so a `pnpm.overrides` pin to stable `0.7.6` risks breaking the SW bundle. **Deferred** as a known exception to the latest-stable policy; revisit when serwist drops the beta upstream.
+- **Owner art** for `assets/icon-master.svg` — provided (branded balance-scale mark, recolored to `#22c55e` + centered for the maskable safe zone); swap is code-free via `pnpm gen:icons`.
 - **Manifest `screenshots`** (wide + narrow) for a richer Chromium install dialog — captured from the running app if feasible; skipped without blocking.
 - A future **`/dashboard`** whole-account overview (separate roadmap item) will benefit from this desktop shell but is not in Phase 4.
