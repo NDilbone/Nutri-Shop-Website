@@ -91,7 +91,7 @@ export default withSerwist(nextConfig);
 A single TypeScript SW compiled by Serwist:
 
 ```ts
-import { Serwist } from "serwist";
+import { Serwist, NetworkOnly } from "serwist";
 import type { PrecacheEntry, SerwistGlobalConfig } from "serwist";
 
 declare global {
@@ -106,7 +106,11 @@ const serwist = new Serwist({
   skipWaiting: true,
   clientsClaim: true,
   navigationPreload: true,
-  runtimeCaching: [],                     // <-- nothing dynamic is cached
+  // NetworkOnly writes nothing to the cache; this single navigation route exists
+  // ONLY so the fallback plugin (attached per runtimeCaching entry) can fire offline.
+  runtimeCaching: [
+    { matcher: ({ request }) => request.mode === "navigate", handler: new NetworkOnly() },
+  ],
   fallbacks: {
     entries: [
       {
@@ -121,7 +125,7 @@ serwist.addEventListeners();
 ```
 
 Key invariants:
-- **`runtimeCaching: []`** — no runtime caches at all. Navigations and fetches go to the network; only the precache (static assets) and the `/~offline` fallback are served from the SW.
+- **One `NetworkOnly` navigation route, nothing else** — `NetworkOnly` performs a bare `fetch()` and writes nothing to any cache, so no authed HTML/JSON is ever stored. It exists solely because serwist attaches the offline-fallback plugin **per `runtimeCaching` entry** (an empty array would never serve `/~offline`). Navigations/fetches hit the network; only the precache (static assets) and the `/~offline` fallback come from the SW.
 - `__SW_MANIFEST` is injected by Serwist at build time and contains only built static assets (`_next/static/*`, fonts, the committed icons) plus the `/~offline` document added via `additionalPrecacheEntries` (§3.1). It does **not** include authenticated route HTML.
 - `skipWaiting`/`clientsClaim` so an updated SW takes over promptly (acceptable: there is no cached private data to invalidate).
 
@@ -157,7 +161,7 @@ export default function manifest(): MetadataRoute.Manifest {
 
 ### 3.4 Icons (`assets/icon-master.*` → `public/icons/`)
 - Owner drops a master at `assets/icon-master.svg` (preferred) or a square PNG ≥512px.
-- A Node script `scripts/gen-icons.mjs` (invoked via `pnpm gen:icons`) uses `sharp` to produce: `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` (master centered on a `#0f1411` safe-area padded canvas so maskable crop never clips), `apple-touch-icon-180.png`, and `favicon.ico`.
+- A Node script `scripts/gen-icons.mjs` (invoked via `pnpm gen:icons`) uses `sharp` to produce: `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` (master centered on a `#0f1411` safe-area padded canvas so maskable crop never clips), and `apple-touch-icon-180.png`. The browser-tab favicon is the 192 PNG referenced via Next's `metadata.icons` (sharp cannot emit a real multi-resolution `.ico`, so no `favicon.ico` is generated).
 - Generated files are **committed**. CI and Vercel never run the generator (no art in the pipeline). Re-running `gen:icons` after swapping the master regenerates them.
 - **This is the only task gated on owner input.** Everything else proceeds without the art; a placeholder master can unblock the build and be swapped later with no code change.
 
@@ -212,7 +216,7 @@ Both nav surfaces render in the layout; CSS (`lg:hidden` / `hidden lg:flex`) dec
 - Purely presentational change (Tailwind responsive classes on the panel container); no behavioral or accessibility regression.
 
 ### 5.3 Per-screen reflow (CSS only, `≥lg`)
-- **Today** (`TodayView`): headline macro `StatTile`s stay full-width on top; below, a two-column grid — meals list (wider, ~3fr) beside the micros/`NutritionPanel` (~2fr). One column on phone.
+- **Today** (`today/page.tsx`): `DateNav` full-width on top; below, a two-column grid wrapping `TodayView` (headline macros + meals, ~3fr) beside `NutritionPanel` (micros, ~2fr). Done at the page level (not inside `TodayView`) so no component split is needed; headline macros sit atop the meals column. One column on phone.
 - **List** (`ListView`): the aisle-category groups become a responsive multi-column board (`columns`/grid, 2 at `lg`, 3 at `xl`); the inline **Add item** row spans full width on top; **Clear checked** stays in the header. One column on phone.
 - **Add** (`AddView`): the USDA search input spans full width; results render as a 2-column grid at `≥lg`. One column on phone.
 - **Account**: unchanged narrow centered column.
@@ -234,7 +238,7 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 - `components/ui/InstallPrompt.tsx` — install button + iOS hint (client).
 - `scripts/gen-icons.mjs` — `sharp` icon generator (`pnpm gen:icons`).
 - `assets/icon-master.svg` — owner-supplied master (placeholder until provided).
-- `public/icons/*`, `public/favicon.ico` — committed generated outputs.
+- `public/icons/*` — committed generated outputs (192/512/maskable/apple-touch); the 192 doubles as the browser favicon via `metadata.icons`.
 - `vercel.json` — `{ "buildCommand": "next build --webpack" }` so Vercel builds under webpack (the SW plugin runs).
 
 **Modified**
@@ -243,7 +247,7 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 - `app/layout.tsx` — PWA `<head>` meta (`theme-color`, `apple-mobile-web-app-*`, `apple-touch-icon`, `apple-mobile-web-app-title`).
 - `app/(app)/layout.tsx` — responsive shell (TabBar ↔ SideNav, content width); mount `InstallPrompt` once here (self-hides when standalone/installed).
 - `components/ui/Sheet.tsx` — responsive bottom-sheet ↔ modal.
-- `app/(app)/today/TodayView.tsx`, `app/(app)/list/ListView.tsx`, `app/(app)/add/AddView.tsx` — `lg` multi-column reflow.
+- `app/(app)/today/page.tsx`, `app/(app)/list/ListView.tsx`, `app/(app)/add/AddView.tsx` — `lg` multi-column reflow.
 - `package.json` — deps (`@serwist/next`, `serwist`, `sharp`); `"build": "next build --webpack"`; `gen:icons` script.
 - `pnpm-workspace.yaml` — `sharp` already in `allowBuilds` (confirm); add nothing new unless a new native dep appears.
 - `.gitignore` — ensure `public/sw.js` and Serwist build artifacts (`public/swe-worker-*.js`) are ignored (generated at build), while `public/icons/*` stay committed.
@@ -272,7 +276,7 @@ No data-flow, Server Action, or query changes — these are layout-only edits to
 
 | Risk | Mitigation |
 |------|------------|
-| SW caches authenticated content → cross-user leak on a shared install. | `runtimeCaching: []`; navigations/API are NetworkOnly; automated assertion that Cache Storage holds only static + `/~offline`; manual privacy check in §7. **This is the phase's primary invariant.** |
+| SW caches authenticated content → cross-user leak on a shared install. | Sole runtime route is `NetworkOnly` (zero cache writes); precache holds only static assets + `/~offline`; build-time grep asserts no app route in the precache manifest (§7); manual Cache-Storage privacy check (§7). **This is the phase's primary invariant.** |
 | CSP silently blocks the SW (`strict-dynamic` ignores `'self'` for workers). | Explicit `worker-src 'self'` (§4) + a test asserting its presence. |
 | Unauthenticated `/sw.js` request redirected to `/login` → SW never installs. | `sw.js` excluded from the proxy matcher (§4) + a matcher test. |
 | Stale SW serves an old shell after a deploy. | `skipWaiting` + `clientsClaim`; no private data cached so activation is safe; `reloadOnOnline`. |
