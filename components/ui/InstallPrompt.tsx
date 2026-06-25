@@ -56,6 +56,9 @@ export function InstallPrompt() {
 
   if (!isClient) return null;
 
+  const installedNow = snap.endsWith(":1");
+  if (installedNow) return null;
+
   const standalone =
     window.matchMedia("(display-mode: standalone)").matches ||
     (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
