@@ -21,7 +21,12 @@ type OfflineError = {
   online: boolean;
   signOutAndWipe: () => Promise<void>;
 };
-type OfflineCtx = OfflineReady | OfflineError;
+type OfflineLoading = {
+  status: "loading";
+  online: boolean;
+  signOutAndWipe: () => Promise<void>;
+};
+type OfflineCtx = OfflineReady | OfflineError | OfflineLoading;
 
 const Ctx = createContext<OfflineCtx | null>(null);
 
@@ -141,7 +146,26 @@ export function OfflineProvider({ userId, children }: { userId: string; children
       </Ctx.Provider>
     );
   }
-  if (!ready) return null; // brief: DB opening + key load
+  // DB still opening + key loading: render children so the online-only pages
+  // (/today, /add, /account) work immediately. /list reads status !== "ready"
+  // and shows its loading affordance. A loading-state sign-out can't sync — it's
+  // a best-effort wipe by name + POST (same as the setup-error path).
+  if (!ready) {
+    return (
+      <Ctx.Provider
+        value={{
+          status: "loading",
+          online,
+          signOutAndWipe: async () => {
+            await deleteListDb(userId);
+            postSignOut();
+          },
+        }}
+      >
+        {children}
+      </Ctx.Provider>
+    );
+  }
   return (
     <Ctx.Provider value={{ status: "ready", db: ready.db, cryptoKey: ready.cryptoKey, online, syncing, pending, sync, signOutAndWipe }}>
       {children}

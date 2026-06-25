@@ -36,7 +36,14 @@ export function ListView() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   if (off.status !== "ready") {
-    return <SyncStatus online={off.online} syncing={false} pending={0} error={off.error} />;
+    return (
+      <SyncStatus
+        online={off.online}
+        syncing={false}
+        pending={0}
+        error={off.status === "error" ? off.error : undefined}
+      />
+    );
   }
 
   const { db, cryptoKey, online, syncing, pending, sync } = off;
