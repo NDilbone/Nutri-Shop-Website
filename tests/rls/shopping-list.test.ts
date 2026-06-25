@@ -180,4 +180,47 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("shopping_list RLS isolation", () => {
     const { data } = await userA.from("shopping_list_items").select("name").eq("id", id).single();
     expect(data?.name).toBe("Milk");
   });
+
+  // First-sync contract that FIX 1 (syncShoppingList → getOrCreateDefaultList)
+  // relies on: an item pushed for a real owned default list lands; an item whose
+  // list_id has no owning shopping_lists row (the brand-new-user client-minted id)
+  // is rejected by the FK + owner-only RLS WITH CHECK.
+
+  it("sync_shopping_items: an item pushed for a real owned default list lands and is readable", async () => {
+    const id = crypto.randomUUID();
+    const { error } = await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id,
+        list_id: listAId, // userA's real, owned default list
+        name: "Eggs",
+        quantity: null,
+        category: null,
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: new Date().toISOString(),
+      }],
+    });
+    expect(error).toBeNull();
+    const { data } = await userA.from("shopping_list_items").select("name").eq("id", id).single();
+    expect(data?.name).toBe("Eggs");
+  });
+
+  it("sync_shopping_items: rejects an item whose list_id has no owning list (the brand-new-user fake-id case)", async () => {
+    const orphanListId = crypto.randomUUID(); // no shopping_lists row → FK + RLS WITH CHECK reject
+    const { error } = await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id: crypto.randomUUID(),
+        list_id: orphanListId,
+        name: "x",
+        quantity: null,
+        category: null,
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: new Date().toISOString(),
+      }],
+    });
+    expect(error).not.toBeNull(); // exactly why syncShoppingList must create the list first
+  });
 });

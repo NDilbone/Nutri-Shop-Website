@@ -83,13 +83,13 @@ async function applyServerChanges(db: ListDb, key: CryptoKey, items: ServerItemR
     await db.items.put(row);
   }
 
-  // Converge on the server's real default list id once items are known
-  // (replaces any client-minted offline id from getOrInitListId).
+  // Converge meta.defaultListId onto the server's real default list id once items
+  // are known (replaces any client-minted offline id from getOrInitListId). All of
+  // a user's items share the single default list, so this is a stable no-op once
+  // converged — it must run unconditionally, not only when nothing is stored yet,
+  // or a once-minted offline id stays sticky and never converges.
   const first = items[0];
   if (first !== undefined) {
-    const existing = await db.meta.get("defaultListId");
-    if (!existing) {
-      await db.meta.put({ key: "defaultListId", value: first.list_id });
-    }
+    await db.meta.put({ key: "defaultListId", value: first.list_id });
   }
 }
