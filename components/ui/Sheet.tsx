@@ -4,7 +4,11 @@ import type { ReactNode } from "react";
 
 export function Sheet({ open, onClose, title, children }: { open: boolean; onClose: () => void; title?: string; children: ReactNode }) {
   return (
-    <div className={`fixed inset-0 z-50 ${open ? "" : "pointer-events-none"}`} aria-hidden={!open} inert={!open}>
+    <div
+      className={`fixed inset-0 z-50 ${open ? "" : "pointer-events-none"} lg:flex lg:items-center lg:justify-center lg:p-6`}
+      aria-hidden={!open}
+      inert={!open}
+    >
       <button
         type="button"
         aria-label="Close"
@@ -17,9 +21,11 @@ export function Sheet({ open, onClose, title, children }: { open: boolean; onClo
         aria-label={title ?? "Dialog"}
         className={`absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-border bg-surface-2 p-4 pb-6 shadow-2xl transition-transform duration-200 ${
           open ? "translate-y-0" : "translate-y-full"
+        } lg:static lg:inset-auto lg:w-full lg:max-w-md lg:translate-y-0 lg:rounded-2xl lg:border lg:p-5 lg:transition-opacity lg:duration-150 ${
+          open ? "lg:opacity-100" : "lg:opacity-0"
         }`}
       >
-        <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-border" />
+        <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-border lg:hidden" />
         {children}
       </div>
     </div>
