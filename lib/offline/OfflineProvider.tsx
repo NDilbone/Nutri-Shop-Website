@@ -25,6 +25,14 @@ type OfflineCtx = OfflineReady | OfflineError;
 
 const Ctx = createContext<OfflineCtx | null>(null);
 
+function postSignOut() {
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = "/auth/signout";
+  document.body.appendChild(form);
+  form.submit();
+}
+
 export function useOffline(): OfflineCtx {
   const v = useContext(Ctx);
   if (!v) throw new Error("useOffline must be used within OfflineProvider");
@@ -94,7 +102,7 @@ export function OfflineProvider({ userId, children }: { userId: string; children
   }, [ready, doSync]);
 
   const signOutAndWipe = useCallback(async () => {
-    if (!ready) { window.location.assign("/auth/signout"); return; }
+    if (!ready) { postSignOut(); return; }
     const dirty = await getDirtyCount(ready.db);
     const decision = signOutDecision(dirty, navigator.onLine);
     if (decision === "sync-then-wipe") await doSync();
@@ -103,7 +111,7 @@ export function OfflineProvider({ userId, children }: { userId: string; children
       if (!ok) return;
     }
     await deleteListDb(userId);
-    window.location.assign("/auth/signout");
+    postSignOut();
   }, [ready, doSync, userId]);
 
   // Setup failed (e.g. a browser that cannot persist the key): keep the rest of
@@ -115,7 +123,7 @@ export function OfflineProvider({ userId, children }: { userId: string; children
           status: "error",
           error: setupError,
           online,
-          signOutAndWipe: async () => { window.location.assign("/auth/signout"); },
+          signOutAndWipe: async () => { postSignOut(); },
         }}
       >
         {children}
