@@ -2,28 +2,33 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { Sheet } from "@/components/ui/Sheet";
 import { Button } from "@/components/ui/Button";
 import { ItemSheet, type ItemDraft } from "@/app/(app)/list/ItemSheet";
-import { addItemAction } from "@/app/(app)/list/actions";
+import { useOffline } from "@/lib/offline/OfflineProvider";
+import { getOrInitListId } from "@/lib/offline/db";
+import { addLocalItem } from "@/lib/offline/items";
 
 export function TabBar() {
   const pathname = usePathname();
   const router = useRouter();
   const [chooser, setChooser] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [, startTransition] = useTransition();
+  const off = useOffline();
   const active = (p: string) => pathname === p || pathname.startsWith(p + "/");
 
   async function addToList(draft: ItemDraft) {
-    startTransition(async () => {
-      await addItemAction({
-        name: draft.name,
-        quantity: draft.quantity.trim() || undefined,
-        category: draft.category || undefined,
-      });
+    if (off.status !== "ready") return;
+    const { db, cryptoKey, sync } = off;
+    const listId = await getOrInitListId(db);
+    await addLocalItem(db, cryptoKey, listId, {
+      name: draft.name,
+      quantity: draft.quantity.trim() || null,
+      category: draft.category || null,
+      fdcId: null,
     });
+    sync();
   }
 
   return (

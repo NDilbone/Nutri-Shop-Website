@@ -5,7 +5,9 @@ import type { NormalizedFood } from "@/lib/fdc/cache";
 import type { Meal } from "@/lib/nutrition/types";
 import { todayLocal } from "@/lib/date";
 import { addFoodAction } from "@/app/(app)/today/actions";
-import { addItemAction } from "@/app/(app)/list/actions";
+import { useOffline } from "@/lib/offline/OfflineProvider";
+import { getOrInitListId } from "@/lib/offline/db";
+import { addLocalItem } from "@/lib/offline/items";
 import { Input } from "@/components/ui/Input";
 import { Segmented } from "@/components/ui/Segmented";
 import { QuickAddSheet } from "./QuickAddSheet";
@@ -22,6 +24,8 @@ export function AddView({ date, presetMeal }: { date: string; presetMeal: Meal }
   const [selected, setSelected] = useState<NormalizedFood | null>(null);
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+
+  const off = useOffline();
 
   const loggedOn = date || todayLocal();
 
@@ -51,6 +55,21 @@ export function AddView({ date, presetMeal }: { date: string; presetMeal: Meal }
     if (!selected) return;
     const r = await addFoodAction({ fdcId: selected.fdcId, amountGrams, meal, loggedOn });
     setToast("error" in r ? r.error : "Added.");
+  }
+
+  async function addToList() {
+    if (!selected) return;
+    if (off.status !== "ready") { setToast("Offline storage unavailable."); return; }
+    const { db, cryptoKey, sync } = off;
+    const listId = await getOrInitListId(db);
+    await addLocalItem(db, cryptoKey, listId, {
+      name: selected.description,
+      quantity: null,
+      category: null,
+      fdcId: selected.fdcId,
+    });
+    sync();
+    setToast("Added to shopping list.");
   }
 
   return (
@@ -86,10 +105,7 @@ export function AddView({ date, presetMeal }: { date: string; presetMeal: Meal }
         initialGrams={selected?.nutrition.serving?.amount ?? 100}
         mode="add"
         onSubmit={submit}
-        onAddToList={selected ? async () => {
-          await addItemAction({ name: selected.description, fdcId: selected.fdcId });
-          setToast("Added to shopping list.");
-        } : undefined}
+        onAddToList={selected ? addToList : undefined}
       />
 
       {toast ? <p role="status" className="fixed inset-x-0 bottom-24 mx-auto w-fit rounded-md bg-surface px-4 py-2 text-sm text-text shadow-lg">{toast}</p> : null}
