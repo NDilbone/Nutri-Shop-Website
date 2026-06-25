@@ -1,22 +1,56 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
+import { Sheet } from "@/components/ui/Sheet";
+import { Button } from "@/components/ui/Button";
+import { ItemSheet, type ItemDraft } from "@/app/(app)/list/ItemSheet";
+import { addItemAction } from "@/app/(app)/list/actions";
 
 export function TabBar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [chooser, setChooser] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [, startTransition] = useTransition();
   const active = (p: string) => pathname === p || pathname.startsWith(p + "/");
+
+  async function addToList(draft: ItemDraft) {
+    startTransition(async () => {
+      await addItemAction({
+        name: draft.name,
+        quantity: draft.quantity.trim() || undefined,
+        category: draft.category || undefined,
+      });
+    });
+  }
+
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 flex items-end justify-around border-t border-border bg-surface-2 px-2 pb-2 pt-2">
-      <Link href="/today" className={`flex flex-1 flex-col items-center gap-0.5 text-[10px] ${active("/today") ? "text-brand" : "text-muted"}`}>
-        <span className="text-lg leading-none">▦</span>Today
-      </Link>
-      <Link href="/add" aria-label="Add food" className="flex flex-1 flex-col items-center">
-        <span className="-mt-5 flex h-12 w-12 items-center justify-center rounded-full bg-brand text-2xl font-light text-[#08130b] shadow-lg">+</span>
-      </Link>
-      <Link href="/account" className={`flex flex-1 flex-col items-center gap-0.5 text-[10px] ${active("/account") ? "text-brand" : "text-muted"}`}>
-        <span className="text-lg leading-none">◔</span>Account
-      </Link>
-    </nav>
+    <>
+      <nav className="fixed inset-x-0 bottom-0 z-40 flex items-end justify-around border-t border-border bg-surface-2 px-2 pb-2 pt-2">
+        <Link href="/today" className={`flex flex-1 flex-col items-center gap-0.5 text-[10px] ${active("/today") ? "text-brand" : "text-muted"}`}>
+          <span className="text-lg leading-none">▦</span>Today
+        </Link>
+        <Link href="/list" className={`flex flex-1 flex-col items-center gap-0.5 text-[10px] ${active("/list") ? "text-brand" : "text-muted"}`}>
+          <span className="text-lg leading-none">☑</span>List
+        </Link>
+        <button type="button" aria-label="Add" onClick={() => setChooser(true)} className="flex flex-1 flex-col items-center">
+          <span className="-mt-5 flex h-12 w-12 items-center justify-center rounded-full bg-brand text-2xl font-light text-[#08130b] shadow-lg">+</span>
+        </button>
+        <Link href="/account" className={`flex flex-1 flex-col items-center gap-0.5 text-[10px] ${active("/account") ? "text-brand" : "text-muted"}`}>
+          <span className="text-lg leading-none">◔</span>Account
+        </Link>
+      </nav>
+
+      <Sheet open={chooser} onClose={() => setChooser(false)} title="Add">
+        <div className="grid gap-2">
+          <Button onClick={() => { setChooser(false); router.push("/add"); }}>Log food</Button>
+          <Button variant="ghost" onClick={() => { setChooser(false); setAddOpen(true); }}>Add to list</Button>
+        </div>
+      </Sheet>
+
+      <ItemSheet open={addOpen} onClose={() => setAddOpen(false)} mode="add" onSubmit={addToList} />
+    </>
   );
 }

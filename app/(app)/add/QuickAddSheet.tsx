@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/Button";
 const MEAL_OPTS = MEALS.map((m) => ({ value: m, label: m[0]!.toUpperCase() + m.slice(1) }));
 
 export function QuickAddSheet({
-  open, onClose, food, initialMeal, initialGrams, mode = "add", onSubmit, onDelete,
+  open, onClose, food, initialMeal, initialGrams, mode = "add", onSubmit, onDelete, onAddToList,
 }: {
   open: boolean;
   onClose: () => void;
@@ -25,6 +25,7 @@ export function QuickAddSheet({
   mode?: "add" | "edit";
   onSubmit: (args: { amountGrams: number; meal: Meal }) => Promise<void>;
   onDelete?: () => Promise<void>;
+  onAddToList?: () => Promise<void>;
 }) {
   const [meal, setMeal] = useState<Meal>(initialMeal);
   const [unit, setUnit] = useState<"g" | "serving">("g");
@@ -106,6 +107,14 @@ export function QuickAddSheet({
           <Button onClick={submit} disabled={pending || grams <= 0}>
             {pending ? "…" : mode === "edit" ? "Save" : `Add to ${meal}`}
           </Button>
+          {mode === "add" && onAddToList ? (
+            <Button
+              variant="ghost"
+              onClick={async () => { setPending(true); try { await onAddToList(); onClose(); } finally { setPending(false); } }}
+            >
+              Add to shopping list
+            </Button>
+          ) : null}
           {mode === "edit" && onDelete ? (
             <Button variant="danger" onClick={async () => { setPending(true); try { await onDelete(); onClose(); } finally { setPending(false); } }}>
               Delete entry
