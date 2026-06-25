@@ -38,6 +38,15 @@ The macro/micro tracker UI, built on the Phase 1 food API. Phone-first, with a b
 
 Logged entries live in `logged_foods` (per-user, Row Level Security). Each row **snapshots** the food's per-100g nutrition at log time, so a logged day stays accurate even if the upstream USDA data later changes. The former `/dashboard` route is now `/today`.
 
+## Shopping list (Phase 3)
+
+Per-user shopping list built on the Phase 1/2 foundation.
+
+- `/list` — shopping list view: items grouped by aisle category, with check-off (checked items move to a struck-through "Checked" section) and a one-tap **Clear checked** button. Items add three ways: inline on `/list`, via the center **＋** chooser, or from a USDA food's detail sheet (the last carries the food's `fdc_id` and name).
+- **Shopping list** — a per-user list of items to buy (free-text or linked from a USDA food), grouped by aisle, with check-off and one-tap "Clear checked". Owner-only (RLS); built to go offline in a later phase.
+
+Items support an optional quantity and category. Edit and single-item delete work; removed items are soft-deleted (`deleted_at`). The list lives in `shopping_lists` and `shopping_list_items` (per-user, Row Level Security).
+
 ## Database migrations
 Migrations live in `supabase/migrations/`. On merge to `main`, the **Apply DB migrations**
 workflow (`.github/workflows/db-migrate.yml`) runs `supabase db push` against the production
