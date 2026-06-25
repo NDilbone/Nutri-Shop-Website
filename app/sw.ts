@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import { Serwist, NetworkOnly, NetworkFirst } from "serwist";
 import type { PrecacheEntry, SerwistGlobalConfig } from "serwist";
+import { isListNavigation, isOtherNavigation } from "@/lib/pwa/sw-routes";
 
 declare global {
   interface WorkerGlobalScope extends SerwistGlobalConfig {
@@ -20,7 +21,7 @@ const serwist = new Serwist({
       // Data-free /list shell: cache it so the page loads offline. It contains no
       // authenticated data (the page renders none server-side); list data comes
       // from the encrypted IndexedDB store at runtime.
-      matcher: ({ request, url }) => request.mode === "navigate" && url.pathname === "/list",
+      matcher: isListNavigation,
       handler: new NetworkFirst({ cacheName: "list-shell" }),
     },
     {
@@ -30,7 +31,7 @@ const serwist = new Serwist({
       // offline and serves the precached /~offline page. An empty runtimeCaching array
       // would never serve the fallback.
       // All other navigations: never cached; offline falls back to /~offline.
-      matcher: ({ request, url }) => request.mode === "navigate" && url.pathname !== "/list",
+      matcher: isOtherNavigation,
       handler: new NetworkOnly(),
     },
   ],
