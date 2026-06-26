@@ -4,14 +4,14 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
-import { svgToDataUri } from "@/lib/auth/qr";
+import { qrCodeImageSrc } from "@/lib/auth/qr";
 import { startEnrollmentAction, completeMfaAction } from "./actions";
 
 export function EnrollForm({ redirectTo = "/today" }: { redirectTo?: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [enroll, setEnroll] = useState<{ factorId: string; qrCodeSvg: string; secret: string } | null>(null);
+  const [enroll, setEnroll] = useState<{ factorId: string; qrCode: string; secret: string } | null>(null);
   const [code, setCode] = useState("");
 
   const begin = () =>
@@ -50,14 +50,16 @@ export function EnrollForm({ redirectTo = "/today" }: { redirectTo?: string }) {
 
   return (
     <div className="space-y-4">
-      {/* Render the QR as an <img> data URI, NOT via innerHTML: GoTrue colors the SVG
-          with inline style="fill:..." attributes that the prod CSP (style-src nonce-only)
-          strips when injected into the page, rendering it solid black. As an image
-          resource the inline fills survive; img-src already allows data:. */}
+      {/* Render the QR as an <img>, NOT via innerHTML. GoTrue's qr_code is already a
+          data:image/svg+xml URI (use it verbatim — qrCodeImageSrc passes data: through and
+          only wraps raw SVG; wrapping a data: URI again double-encodes it → broken image).
+          As an image resource the SVG's inline style="fill:..." colors also survive the prod
+          CSP (style-src nonce-only), which would strip them if the markup were injected
+          inline (→ solid black). img-src already allows data:. */}
       <div className="w-fit rounded-md bg-white p-3">
         {/* eslint-disable-next-line @next/next/no-img-element -- QR is an inline data: URI; next/image optimization is inapplicable */}
         <img
-          src={svgToDataUri(enroll.qrCodeSvg)}
+          src={qrCodeImageSrc(enroll.qrCode)}
           alt="Scan this QR code with your authenticator app"
           width={192}
           height={192}

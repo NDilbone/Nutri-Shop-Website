@@ -225,7 +225,7 @@ For the **challenge** screen the `factorId` is the existing verified factor: `(a
 
 ### 6.3 QR rendering & CSP
 
-`data.totp.qr_code` is **raw SVG markup** whose module colors are inline `style="fill:..."` attributes (GoTrue uses goqrsvg + svgo). Render it as an **`<img>` data URI** (`svgToDataUri()` → `data:image/svg+xml;utf8,...`), **not** via `dangerouslySetInnerHTML`: injected into the page DOM those inline styles are stripped by the prod CSP (`style-src 'self' 'nonce-...'`, no `'unsafe-inline'`) and the QR renders solid black. As an `<img>` the SVG is an isolated image resource the page `style-src` does not govern, so the fills survive. **No CSP change** — `img-src` already allows `data:`. Also show `data.totp.secret` for manual entry; no service-worker change.
+`data.totp.qr_code` on the **deployed GoTrue is already a complete `data:image/svg+xml` URI** (older/self-hosted versions return raw `<svg>` markup whose colors are inline `style="fill:..."`). Render it with an **`<img>`** via `qrCodeImageSrc()` (passes a `data:` URI through verbatim; wraps raw SVG once) — **not** `dangerouslySetInnerHTML`. Two reasons: (1) wrapping an already-`data:` URI again double-encodes it, so the `<img>` decodes to the literal "data:..." text instead of `<svg>` → broken image; (2) if injected as inline markup, the embedded SVG's inline styles are stripped by the prod CSP (`style-src 'self' 'nonce-...'`, no `'unsafe-inline'`) → QR renders solid black. As an `<img>` the image resource is not governed by the page `style-src`, so the fills survive. **No CSP change** — `img-src` already allows `data:`. Also show `data.totp.secret` for manual entry; no service-worker change.
 
 ### 6.4 Admin reset — `lib/dal/admin.ts` (service-role)
 
