@@ -31,8 +31,15 @@ export function AdminView({ invites }: { invites: InviteRow[] }) {
   return (
     <div className="space-y-6">
       <form ref={formRef} action={onAdd} className="flex gap-2">
-        <Input name="email" type="email" required placeholder="invite email" aria-label="Invite email" />
-        <Button type="submit" disabled={pending}>Add</Button>
+        {/* Input and Button are both w-full (full-width CTAs); wrap so the field
+            grows to fill the row and the button stays content-width, instead of
+            each shrinking to ~half the row and squishing the email field. */}
+        <div className="min-w-0 flex-1">
+          <Input name="email" type="email" required placeholder="invite email" aria-label="Invite email" />
+        </div>
+        <div className="shrink-0">
+          <Button type="submit" disabled={pending}>Add</Button>
+        </div>
       </form>
 
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
@@ -45,35 +52,43 @@ export function AdminView({ invites }: { invites: InviteRow[] }) {
               <span className="text-muted">· {inv.status}</span>
             </span>
 
+            {/* Buttons are w-full; a shrink-0 content-width wrapper keeps each
+                action compact so the email column (flex-1) keeps its width. */}
             {inv.status === "pending" && (
-              <Button
-                type="button"
-                disabled={pending}
-                onClick={() => {
-                  if (window.confirm(`Revoke the invite for ${inv.email}?`)) run(() => revokeInviteAction(inv.email));
-                }}
-              >
-                Revoke
-              </Button>
+              <div className="shrink-0">
+                <Button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    if (window.confirm(`Revoke the invite for ${inv.email}?`)) run(() => revokeInviteAction(inv.email));
+                  }}
+                >
+                  Revoke
+                </Button>
+              </div>
             )}
 
             {inv.status === "joined" && inv.user_id && (
-              <Button
-                type="button"
-                disabled={pending}
-                onClick={() => {
-                  if (window.confirm(`Disable ${inv.email}? They will be logged out and cannot sign back in.`))
-                    run(() => setBanAction(inv.user_id!, true));
-                }}
-              >
-                Disable
-              </Button>
+              <div className="shrink-0">
+                <Button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    if (window.confirm(`Disable ${inv.email}? They will be logged out and cannot sign back in.`))
+                      run(() => setBanAction(inv.user_id!, true));
+                  }}
+                >
+                  Disable
+                </Button>
+              </div>
             )}
 
             {inv.status === "banned" && inv.user_id && (
-              <Button type="button" disabled={pending} onClick={() => run(() => setBanAction(inv.user_id!, false))}>
-                Re-enable
-              </Button>
+              <div className="shrink-0">
+                <Button type="button" disabled={pending} onClick={() => run(() => setBanAction(inv.user_id!, false))}>
+                  Re-enable
+                </Button>
+              </div>
             )}
           </li>
         ))}
