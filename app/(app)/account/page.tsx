@@ -1,7 +1,7 @@
 import { requireUser } from "@/lib/dal/session";
 import { createClient } from "@/lib/supabase/server";
 import { Card } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { SignOutButton } from "@/components/ui/SignOutButton";
 
 export default async function AccountPage() {
   const { userId } = await requireUser();
@@ -16,9 +16,9 @@ export default async function AccountPage() {
         <p className="text-muted">Signed in as</p>
         <p className="break-all">{profile?.display_name ?? userId}</p>
       </Card>
-      <form action="/auth/signout" method="post" className="mt-4">
-        <Button type="submit" variant="ghost">Sign out</Button>
-      </form>
+      <div className="mt-4">
+        <SignOutButton />
+      </div>
     </main>
   );
 }

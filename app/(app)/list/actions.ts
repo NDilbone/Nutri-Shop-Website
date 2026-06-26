@@ -1,45 +1,32 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
-import { addItem, editItem, toggleItem, softDeleteItem, clearChecked } from "@/lib/dal/shopping-list";
-import { addItemSchema, editItemSchema, toggleItemSchema, deleteItemSchema } from "@/lib/validation/shopping-list";
+import {
+  getChangesSince,
+  getOrCreateDefaultList,
+  type ServerItemRow,
+} from "@/lib/dal/shopping-list";
+import { requireUser } from "@/lib/dal/session";
+import { createClient } from "@/lib/supabase/server";
+import { syncInputSchema } from "@/lib/validation/sync";
 
-export type ActionResult = { ok: true } | { error: string };
+export async function syncShoppingList(
+  raw: unknown,
+): Promise<{ items: ServerItemRow[]; cursor: string }> {
+  await requireUser();
+  const input = syncInputSchema.parse(raw);
 
-export async function addItemAction(input: unknown): Promise<ActionResult> {
-  const parsed = addItemSchema.safeParse(input);
-  if (!parsed.success) return { error: "Invalid item." };
-  await addItem(parsed.data);
-  revalidatePath("/list");
-  return { ok: true };
-}
+  if (input.dirtyItems.length > 0) {
+    // The client may have minted a local list_id before the server list existed
+    // (a brand-new user has no shopping_lists row). Resolve (idempotently create)
+    // the user's real default list and point every pushed item at it — Phase 5 is
+    // single-default-list, so this rewrite is exact.
+    const { id: listId } = await getOrCreateDefaultList();
+    const items = input.dirtyItems.map((i) => ({ ...i, list_id: listId }));
 
-export async function editItemAction(input: unknown): Promise<ActionResult> {
-  const parsed = editItemSchema.safeParse(input);
-  if (!parsed.success) return { error: "Invalid edit." };
-  await editItem(parsed.data);
-  revalidatePath("/list");
-  return { ok: true };
-}
+    const supabase = await createClient();
+    const { error } = await supabase.rpc("sync_shopping_items", { p_items: items });
+    if (error) throw new Error("sync push failed");
+  }
 
-export async function toggleItemAction(input: unknown): Promise<ActionResult> {
-  const parsed = toggleItemSchema.safeParse(input);
-  if (!parsed.success) return { error: "Invalid toggle." };
-  await toggleItem(parsed.data.id, parsed.data.checked);
-  revalidatePath("/list");
-  return { ok: true };
-}
-
-export async function deleteItemAction(input: unknown): Promise<ActionResult> {
-  const parsed = deleteItemSchema.safeParse(input);
-  if (!parsed.success) return { error: "Invalid delete." };
-  await softDeleteItem(parsed.data.id);
-  revalidatePath("/list");
-  return { ok: true };
-}
-
-export async function clearCheckedAction(): Promise<ActionResult> {
-  await clearChecked();
-  revalidatePath("/list");
-  return { ok: true };
+  return getChangesSince(input.cursor);
 }

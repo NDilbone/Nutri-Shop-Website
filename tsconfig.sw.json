@@ -4,6 +4,6 @@
     "lib": ["webworker", "ESNext"],
     "types": []
   },
-  "include": ["app/sw.ts"],
+  "include": ["app/sw.ts", "lib/pwa/sw-routes.ts"],
   "exclude": ["node_modules"]
 }

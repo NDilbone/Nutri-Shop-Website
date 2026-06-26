@@ -1,7 +1,7 @@
-import { getItems } from "@/lib/dal/shopping-list";
 import { ListView } from "./ListView";
 
-export default async function ListPage() {
-  const items = await getItems();
-  return <ListView initialItems={items} />;
+// No getItems(): the page renders no list data server-side so its shell is
+// cacheable for offline use without storing any authenticated data.
+export default function ListPage() {
+  return <ListView />;
 }

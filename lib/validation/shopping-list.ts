@@ -3,7 +3,8 @@ import { CATEGORIES } from "@/lib/shopping/types";
 
 const name = z.string().trim().min(1).max(200);
 const quantity = z.string().trim().max(50);
-const category = z.enum(CATEGORIES);
+export const categorySchema = z.enum(CATEGORIES);
+const category = categorySchema;
 
 export const addItemSchema = z.object({
   name,

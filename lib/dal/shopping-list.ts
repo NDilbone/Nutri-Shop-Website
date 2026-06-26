@@ -1,8 +1,9 @@
 import "server-only";
-import { verifySession } from "@/lib/dal/session";
+import { verifySession, requireUser } from "@/lib/dal/session";
 import { createClient } from "@/lib/supabase/server";
 import type { ShoppingListItem } from "@/lib/shopping/types";
 import type { AddItemInput, EditItemInput } from "@/lib/validation/shopping-list";
+import { nextCursor } from "@/lib/offline/payload";
 
 async function authedClient() {
   const session = await verifySession();
@@ -121,4 +122,38 @@ export async function clearChecked(): Promise<void> {
     .eq("checked", true)
     .is("deleted_at", null);
   if (error) throw new Error(`clearChecked failed: ${error.message}`);
+}
+
+export type ServerItemRow = {
+  id: string;
+  list_id: string;
+  name: string;
+  quantity: string | null;
+  category: string | null;
+  fdc_id: number | null;
+  checked: boolean;
+  deleted_at: string | null;
+  edited_at: string;
+  updated_at: string;
+};
+
+/**
+ * Returns all shopping_list_items updated after `cursor` (inclusive of
+ * tombstones — deleted_at IS NULL filter is intentionally omitted so soft-
+ * deleted rows propagate to offline clients during sync).
+ * RLS scopes results to lists owned by the calling user.
+ */
+export async function getChangesSince(
+  cursor: string,
+): Promise<{ items: ServerItemRow[]; cursor: string }> {
+  await requireUser(); // re-verify at the data boundary
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("shopping_list_items")
+    .select("id, list_id, name, quantity, category, fdc_id, checked, deleted_at, edited_at, updated_at")
+    .gt("updated_at", cursor)
+    .order("updated_at", { ascending: true });
+  if (error) throw error;
+  const items = (data ?? []) as ServerItemRow[];
+  return { items, cursor: nextCursor(items.map((r) => r.updated_at), cursor) };
 }

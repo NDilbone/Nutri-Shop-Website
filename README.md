@@ -65,7 +65,40 @@ Per-user shopping list built on the Phase 1/2 foundation.
 
 - `/list` — items grouped by aisle category, with check-off (checked items move to a struck-through "Checked" section) and a one-tap **Clear checked** button. Items add three ways: inline on `/list`, via the center **＋** chooser, or from a USDA food's detail sheet (the last carries the food's `fdc_id` and name). Free-text items support an optional quantity and category.
 
-Edit and single-item delete work; removed items are soft-deleted (`deleted_at`). The list lives in `shopping_lists` and `shopping_list_items` (per-user, Row Level Security); it is built to go offline in a later phase.
+Edit and single-item delete work; removed items are soft-deleted (`deleted_at`). The list lives in `shopping_lists` and `shopping_list_items` (per-user, Row Level Security).
+
+## Offline shopping list (Phase 5)
+
+The shopping list works fully offline and syncs on reconnect. See [`docs/superpowers/specs/2026-06-25-nutri-shop-offline-sync-design.md`](docs/superpowers/specs/2026-06-25-nutri-shop-offline-sync-design.md) for the full design.
+
+### Storage & encryption
+
+- **Local-first:** `/list` is backed by a per-user **encrypted IndexedDB store** (Dexie, named `ns-list-<userId>`), which is the client's source of truth. Sync is read-reactive via `useLiveQuery`.
+- **Encryption:** item content fields (name, quantity, category, fdcId, checked) are encrypted at rest with AES-GCM. The encryption key is a non-extractable Web Crypto `CryptoKey`, stored in the database's `keyv` table.
+- **Lifecycle:** the store is created on sign-in and **wiped on sign-out**. When you switch accounts on the same device, any unmatched store is purged on app boot.
+- **Safety on sign-out:** if you have unsynced edits when signing out, the app pushes them to the server when online, or asks you to confirm before wiping when offline.
+
+### Sync
+
+- **Trigger:** sync runs in the **foreground only** — on app launch, when connectivity returns, when the app comes to the foreground, and automatically (debounced) after each local change while online.
+- **Engine:** one Server Action (authenticated with the session cookie) batches push + pull in a single round trip: first push unsynced edits via a `sync_shopping_items` RPC (last-edit-wins upsert, RLS-gated), then pull changes since the last `updated_at` cursor.
+- **Conflict resolution:** conflicts resolve via **last-edit-wins**, using the client's `edited_at` timestamp (real edit time). The server's `updated_at` is the pull cursor.
+- **Scope:** **only the shopping list is offline-capable**; macro logging (`/today`, `/add`) stays online-only.
+
+### Local testing
+
+The service worker (including the offline `/list` shell) only activates in a **production build**. To test offline behavior locally:
+
+```bash
+pnpm build && pnpm start
+```
+
+Do **not** test offline with `pnpm dev` — the SW is disabled in development.
+
+### Related changes
+
+- Migration `0005` adds the sync RPC and timestamp fields.
+- The `.github/workflows/db-migrate.yml` and `rls.yml` workflows run on migration or DAL changes to keep RLS in sync.
 
 ## Database migrations
 Migrations live in `supabase/migrations/`. On merge to `main`, the **Apply DB migrations**

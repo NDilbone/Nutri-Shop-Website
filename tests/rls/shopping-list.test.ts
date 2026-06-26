@@ -81,4 +81,146 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("shopping_list RLS isolation", () => {
     const { data } = await userA.from("shopping_list_items").select("id").eq("id", ins.data!.id).is("deleted_at", null);
     expect(data ?? []).toHaveLength(0);
   });
+
+  // sync_shopping_items RPC — cross-user isolation (security invoker + owner-only RLS)
+
+  it("sync_shopping_items: user B cannot upsert into user A's list", async () => {
+    const intruderId = crypto.randomUUID();
+    const itemForAsList = {
+      id: intruderId,
+      list_id: listAId, // A's list
+      name: "intruder",
+      quantity: null,
+      category: null,
+      fdc_id: null,
+      checked: false,
+      deleted_at: null,
+      edited_at: new Date().toISOString(),
+    };
+
+    const { error } = await userB.rpc("sync_shopping_items", { p_items: [itemForAsList] });
+    expect(error).not.toBeNull(); // RLS WITH CHECK rejects
+
+    // And A never sees it.
+    const { data } = await userA.from("shopping_list_items").select("id").eq("id", intruderId);
+    expect(data ?? []).toHaveLength(0);
+  });
+
+  it("sync_shopping_items applies last-edit-wins for the owner", async () => {
+    const id = crypto.randomUUID();
+
+    // Insert with a known timestamp.
+    await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id,
+        list_id: listAId,
+        name: "Milk",
+        quantity: "1",
+        category: "dairy",
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: "2026-06-25T10:00:00.000Z",
+      }],
+    });
+
+    // Older edit must NOT clobber.
+    await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id,
+        list_id: listAId,
+        name: "STALE",
+        quantity: "1",
+        category: "dairy",
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: "2026-06-25T09:00:00.000Z",
+      }],
+    });
+
+    const { data } = await userA.from("shopping_list_items").select("name").eq("id", id).single();
+    expect(data?.name).toBe("Milk");
+  });
+
+  it("sync_shopping_items: user B cannot UPDATE an existing item in user A's list (ON CONFLICT path)", async () => {
+    const id = crypto.randomUUID();
+
+    // A creates the item.
+    await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id,
+        list_id: listAId,
+        name: "Milk",
+        quantity: "1",
+        category: "dairy",
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: "2026-06-25T10:00:00.000Z",
+      }],
+    });
+
+    // B tries to hijack it via ON CONFLICT DO UPDATE with a newer edit time.
+    const { error } = await userB.rpc("sync_shopping_items", {
+      p_items: [{
+        id,
+        list_id: listAId,
+        name: "HIJACK",
+        quantity: "1",
+        category: "dairy",
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: "2026-06-25T12:00:00.000Z",
+      }],
+    });
+    expect(error).not.toBeNull(); // UPDATE USING/WITH CHECK rejects — B does not own the list
+
+    const { data } = await userA.from("shopping_list_items").select("name").eq("id", id).single();
+    expect(data?.name).toBe("Milk");
+  });
+
+  // First-sync contract that FIX 1 (syncShoppingList → getOrCreateDefaultList)
+  // relies on: an item pushed for a real owned default list lands; an item whose
+  // list_id has no owning shopping_lists row (the brand-new-user client-minted id)
+  // is rejected by the FK + owner-only RLS WITH CHECK.
+
+  it("sync_shopping_items: an item pushed for a real owned default list lands and is readable", async () => {
+    const id = crypto.randomUUID();
+    const { error } = await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id,
+        list_id: listAId, // userA's real, owned default list
+        name: "Eggs",
+        quantity: null,
+        category: null,
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: new Date().toISOString(),
+      }],
+    });
+    expect(error).toBeNull();
+    const { data } = await userA.from("shopping_list_items").select("name").eq("id", id).single();
+    expect(data?.name).toBe("Eggs");
+  });
+
+  it("sync_shopping_items: rejects an item whose list_id has no owning list (the brand-new-user fake-id case)", async () => {
+    const orphanListId = crypto.randomUUID(); // no shopping_lists row → FK + RLS WITH CHECK reject
+    const { error } = await userA.rpc("sync_shopping_items", {
+      p_items: [{
+        id: crypto.randomUUID(),
+        list_id: orphanListId,
+        name: "x",
+        quantity: null,
+        category: null,
+        fdc_id: null,
+        checked: false,
+        deleted_at: null,
+        edited_at: new Date().toISOString(),
+      }],
+    });
+    expect(error).not.toBeNull(); // exactly why syncShoppingList must create the list first
+  });
 });
