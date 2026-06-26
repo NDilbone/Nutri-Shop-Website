@@ -42,6 +42,16 @@ jobs:
       - name: Start local Supabase + apply migrations
         run: |
           [ -f supabase/config.toml ] || supabase init
+          # Phase 6B's live MFA test (and the feature itself) requires TOTP MFA, which
+          # `supabase init` disables by default. Ensure the section exists, enable only
+          # the TOTP factor (phone/webauthn stay off), then assert it took so a future
+          # config-schema change fails loudly here, not as an opaque "MFA enroll is disabled".
+          grep -q '^\[auth.mfa.totp\]' supabase/config.toml \
+            || printf '\n[auth.mfa.totp]\nenroll_enabled = false\nverify_enabled = false\n' >> supabase/config.toml
+          sed -i -E '/^\[auth\.mfa\.totp\]/,/^\[/ s/^( *enroll_enabled *=).*/\1 true/' supabase/config.toml
+          sed -i -E '/^\[auth\.mfa\.totp\]/,/^\[/ s/^( *verify_enabled *=).*/\1 true/' supabase/config.toml
+          sed -n '/^\[auth\.mfa\.totp\]/,/^\[/p' supabase/config.toml | grep -q 'enroll_enabled *= *true' \
+            || { echo "::error::failed to enable TOTP MFA in supabase/config.toml"; exit 1; }
           supabase start
           supabase db reset --no-seed
 
