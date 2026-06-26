@@ -1,12 +1,18 @@
-/** Convert raw SVG markup into a `data:` URI for use as an `<img src>`.
+/** Resolve GoTrue's TOTP `qr_code` field to an `<img>` src.
  *
- *  The MFA QR must be rendered as an <img> — NOT via dangerouslySetInnerHTML. GoTrue
- *  returns the QR as raw SVG whose module colors live in inline `style="fill:..."`
- *  attributes (goqrsvg + svgo). Injected into the page DOM, those inline styles are
- *  stripped by the production CSP (`style-src 'self' 'nonce-...'`, no 'unsafe-inline'),
- *  so every rect falls back to the default black fill and the QR renders solid black.
- *  As an <img> data URI the SVG is an isolated image resource the page's style-src does
- *  not govern, so the fills survive. `img-src` already allows `data:` — no CSP change. */
-export function svgToDataUri(svg: string): string {
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+ *  The deployed GoTrue returns `qr_code` ALREADY as a complete `data:image/svg+xml` URI;
+ *  some (older / self-hosted) versions return raw `<svg>` markup instead. A `data:` URI must
+ *  be used VERBATIM — wrapping it again percent-encodes the whole "data:..." string, so the
+ *  `<img>` decodes to that literal text instead of `<svg>` and renders a broken image (the
+ *  bug this replaces). Raw SVG is wrapped exactly once.
+ *
+ *  Rendering the QR as an `<img>` (not via `dangerouslySetInnerHTML`) also matters for CSP:
+ *  GoTrue colors the SVG with inline `style="fill:..."` attributes, which the production CSP
+ *  (`style-src 'self' 'nonce-...'`, no `'unsafe-inline'`) strips when the markup is injected
+ *  into the page — rendering the QR solid black. As an image resource those inline styles
+ *  survive. `img-src` already allows `data:`, so no CSP change is needed. */
+export function qrCodeImageSrc(qrCode: string): string {
+  return qrCode.trimStart().startsWith("data:")
+    ? qrCode
+    : `data:image/svg+xml,${encodeURIComponent(qrCode)}`;
 }

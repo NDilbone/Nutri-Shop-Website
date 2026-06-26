@@ -5,7 +5,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export interface EnrollResult {
   factorId: string;
-  qrCodeSvg: string;
+  /** GoTrue's `totp.qr_code` — a ready-to-use `data:image/svg+xml` URI on the deployed
+   *  version, raw `<svg>` markup on older ones. Pass through `qrCodeImageSrc()` to render. */
+  qrCode: string;
   secret: string;
 }
 
@@ -23,7 +25,7 @@ export async function enrollTotp(): Promise<EnrollResult> {
   // friendlyName intentionally omitted to avoid the unique-name collision.
   const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp" });
   if (error || !data) throw new Error("failed to start MFA enrollment");
-  return { factorId: data.id, qrCodeSvg: data.totp.qr_code, secret: data.totp.secret };
+  return { factorId: data.id, qrCode: data.totp.qr_code, secret: data.totp.secret };
 }
 
 /** Verify a TOTP code (enroll completion or step-up). On success the SSR client persists
