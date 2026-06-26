@@ -3,8 +3,10 @@ import "server-only";
 import { createClient } from "@supabase/supabase-js";
 import { getServerEnv } from "@/lib/env";
 
-/** Service-role client. Bypasses RLS — use ONLY for server-side writes to public
- *  reference tables (food_cache). NEVER import from app/; never expose to the client. */
+/** Service-role client. Bypasses RLS — use ONLY for sanctioned server-side admin ops,
+ *  each behind an is_admin gate: (1) writes to public reference tables (food_cache);
+ *  (2) the reversible user ban via the Auth admin API (lib/dal/admin.ts setUserBanned).
+ *  NEVER expose to the client; never use in the normal authenticated request path. */
 export function createAdminClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

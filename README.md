@@ -100,6 +100,33 @@ Do **not** test offline with `pnpm dev` — the SW is disabled in development.
 - Migration `0005` adds the sync RPC and timestamp fields.
 - The `.github/workflows/db-migrate.yml` and `rls.yml` workflows run on migration or DAL changes to keep RLS in sync.
 
+## Admin (Phase 6A)
+
+Invite management lives in-app at `/admin`, gated to admin users (`profiles.is_admin`).
+Admins can add an invite email (allowlist-only — the invitee then self-signs-up),
+see each invite's status (pending / joined / banned), revoke a pending invite, and
+**disable** (reversibly ban) or **re-enable** a joined user. Disabling keeps the user's
+data and leaves their invite intact (they stay listed so they can be re-enabled);
+re-entry is already blocked because their account exists and the ban prevents login.
+There is no hard delete.
+
+The **Admin** link appears on `/account` only for admins.
+
+### Bootstrapping the first admin
+
+Migration `0006` ships `is_admin` defaulting to `false`, so no one is an admin until
+promoted once by hand. In the Supabase dashboard SQL editor (the surface used to apply
+migrations), run:
+
+```sql
+update public.profiles
+set is_admin = true
+where id = (select id from auth.users where email = '<your-admin-email>');
+```
+
+This is intentionally not committed (keeps the admin email out of the repo). Grant
+further admins the same way.
+
 ## Database migrations
 Migrations live in `supabase/migrations/`. On merge to `main`, the **Apply DB migrations**
 workflow (`.github/workflows/db-migrate.yml`) runs `supabase db push` against the production
