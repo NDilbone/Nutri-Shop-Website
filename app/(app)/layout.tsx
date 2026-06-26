@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
-import { requireUser } from "@/lib/dal/session";
+import { requireStepUp } from "@/lib/dal/session";
 import { TabBar } from "@/components/ui/TabBar";
 import { SideNav } from "@/components/ui/SideNav";
 import { InstallPrompt } from "@/components/ui/InstallPrompt";
 import { OfflineProvider } from "@/lib/offline/OfflineProvider";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const { userId } = await requireUser(); // Gate 2 — server-side, defense in depth beyond proxy.ts
+  const { userId } = await requireStepUp(); // Gate 2 + MFA step-up; defense in depth beyond proxy.ts
   return (
     <OfflineProvider userId={userId}>
       <div className="lg:flex">

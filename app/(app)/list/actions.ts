@@ -5,14 +5,14 @@ import {
   getOrCreateDefaultList,
   type ServerItemRow,
 } from "@/lib/dal/shopping-list";
-import { requireUser } from "@/lib/dal/session";
+import { requireStepUp } from "@/lib/dal/session";
 import { createClient } from "@/lib/supabase/server";
 import { syncInputSchema } from "@/lib/validation/sync";
 
 export async function syncShoppingList(
   raw: unknown,
 ): Promise<{ items: ServerItemRow[]; cursor: string }> {
-  await requireUser();
+  await requireStepUp();
   const input = syncInputSchema.parse(raw);
 
   if (input.dirtyItems.length > 0) {

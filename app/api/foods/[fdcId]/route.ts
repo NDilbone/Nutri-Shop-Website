@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { verifySession } from "@/lib/dal/session";
+import { verifySession, verifyStepUp } from "@/lib/dal/session";
 import { enforceRateLimit, RateLimitError } from "@/lib/dal/rate-limit";
 import { fdcIdSchema } from "@/lib/validation/fdc";
 import { getFoodDetailCached } from "@/lib/fdc/cache";
@@ -11,6 +11,8 @@ export async function GET(
 ) {
   const session = await verifySession();
   if (!session) return jsonError("UNAUTHENTICATED", "Sign in required", 401);
+  if ((await verifyStepUp()) !== "ok")
+    return jsonError("MFA_REQUIRED", "Multi-factor step-up required", 403);
 
   try {
     await enforceRateLimit();

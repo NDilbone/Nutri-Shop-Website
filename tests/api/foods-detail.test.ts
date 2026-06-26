@@ -1,13 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const verifySession = vi.fn();
+const verifyStepUp = vi.fn();
 const enforceRateLimit = vi.fn();
 const getFoodDetailCached = vi.fn();
 
 class RateLimitError extends Error { constructor() { super("rate"); this.name = "RateLimitError"; } }
 class FdcError extends Error { constructor(readonly kind: string) { super(kind); this.name = "FdcError"; } }
 
-vi.mock("@/lib/dal/session", () => ({ verifySession: () => verifySession() }));
+vi.mock("@/lib/dal/session", () => ({
+  verifySession: () => verifySession(),
+  verifyStepUp: () => verifyStepUp(),
+}));
 vi.mock("@/lib/dal/rate-limit", () => ({ enforceRateLimit: () => enforceRateLimit(), RateLimitError }));
 vi.mock("@/lib/fdc/cache", () => ({ getFoodDetailCached: (id: number) => getFoodDetailCached(id) }));
 vi.mock("@/lib/fdc/client", () => ({ FdcError }));
@@ -17,6 +21,7 @@ const req = new Request("http://localhost/api/foods/5");
 
 beforeEach(() => {
   verifySession.mockResolvedValue({ userId: "u1" });
+  verifyStepUp.mockResolvedValue("ok");
   enforceRateLimit.mockResolvedValue(undefined);
   getFoodDetailCached.mockReset();
 });
