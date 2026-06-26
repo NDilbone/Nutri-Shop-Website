@@ -51,11 +51,12 @@ export async function setUserBanned(args: {
 
   // Facts for the guard: is the target an admin, and how many admins are still ACTIVE
   // (count_active_admins excludes banned admins — a plain is_admin count would not).
-  const { data: targetProfile } = await adminClient
+  const { data: targetProfile, error: profileErr } = await adminClient
     .from("profiles")
     .select("is_admin")
     .eq("id", args.targetUserId)
     .single();
+  if (profileErr) throw new Error("failed to read target profile");
   const { data: activeAdmins, error: countErr } = await adminClient.rpc("count_active_admins");
   if (countErr) throw new Error("failed to count active admins");
 
