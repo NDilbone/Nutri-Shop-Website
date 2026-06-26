@@ -127,6 +127,17 @@ where id = (select id from auth.users where email = '<your-admin-email>');
 This is intentionally not committed (keeps the admin email out of the repo). Grant
 further admins the same way.
 
+## Multi-factor authentication (MFA)
+
+Nutri-Shop uses TOTP (authenticator-app) two-factor auth:
+
+- **Admins must use MFA.** An admin with no factor is sent to `/mfa` to set one up before reaching the app; every session is challenged for a 6-digit code.
+- **Members may opt in** from **Account → Two-factor authentication → Enable MFA**, and can disable it there.
+- **Lost device?** An admin opens **Admin**, finds the user, and clicks **Reset MFA** — the user sets up a new authenticator on next sign-in.
+- **Last admin locked out (break-glass):** if the only admin loses their device, delete that user's rows from `auth.mfa_factors` in the Supabase dashboard (or use the Auth admin UI); they can then re-enroll. With more than one admin, a second admin resets the first.
+
+Enforcement is app-layer (no migration): `requireStepUp()` gates the `(app)` layout, every mutating Server Action, and the food API. Confirm the Supabase project uses **asymmetric JWT signing keys** so the proxy verifies the `aal` claim locally (no per-request network call).
+
 ## Database migrations
 Migrations live in `supabase/migrations/`. On merge to `main`, the **Apply DB migrations**
 workflow (`.github/workflows/db-migrate.yml`) runs `supabase db push` against the production

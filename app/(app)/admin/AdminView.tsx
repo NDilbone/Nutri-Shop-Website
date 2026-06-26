@@ -5,7 +5,7 @@ import { useRef, useState, useTransition } from "react";
 import type { InviteRow } from "@/lib/dal/admin";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
-import { addInviteAction, revokeInviteAction, setBanAction } from "./actions";
+import { addInviteAction, revokeInviteAction, setBanAction, resetUserMfaAction } from "./actions";
 
 export function AdminView({ invites }: { invites: InviteRow[] }) {
   const [pending, startTransition] = useTransition();
@@ -87,6 +87,22 @@ export function AdminView({ invites }: { invites: InviteRow[] }) {
               <div className="shrink-0">
                 <Button type="button" disabled={pending} onClick={() => run(() => setBanAction(inv.user_id!, false))}>
                   Re-enable
+                </Button>
+              </div>
+            )}
+
+            {inv.user_id && (
+              <div className="shrink-0">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={() => {
+                    if (window.confirm(`Reset MFA for ${inv.email}? They'll set up a new authenticator next sign-in.`))
+                      run(() => resetUserMfaAction(inv.user_id!));
+                  }}
+                >
+                  Reset MFA
                 </Button>
               </div>
             )}

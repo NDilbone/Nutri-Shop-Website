@@ -1,13 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const verifySession = vi.fn();
+const verifyStepUp = vi.fn();
 const enforceRateLimit = vi.fn();
 const searchFoodsCached = vi.fn();
 
 class RateLimitError extends Error { constructor() { super("rate"); this.name = "RateLimitError"; } }
 class FdcError extends Error { constructor(readonly kind: string, readonly retryAfter?: number) { super(kind); this.name = "FdcError"; } }
 
-vi.mock("@/lib/dal/session", () => ({ verifySession: () => verifySession() }));
+vi.mock("@/lib/dal/session", () => ({
+  verifySession: () => verifySession(),
+  verifyStepUp: () => verifyStepUp(),
+}));
 vi.mock("@/lib/dal/rate-limit", () => ({
   enforceRateLimit: () => enforceRateLimit(),
   RateLimitError,
@@ -19,6 +23,7 @@ const req = (qs: string) => new Request(`http://localhost/api/foods${qs}`);
 
 beforeEach(() => {
   verifySession.mockResolvedValue({ userId: "u1" });
+  verifyStepUp.mockResolvedValue("ok");
   enforceRateLimit.mockResolvedValue(undefined);
   searchFoodsCached.mockReset();
 });
@@ -42,6 +47,12 @@ describe("GET /api/foods (search)", () => {
     verifySession.mockResolvedValue(null);
     const { GET } = await import("@/app/api/foods/route");
     expect((await GET(req("?q=egg"))).status).toBe(401);
+  });
+
+  it("403s when MFA step-up is required", async () => {
+    verifyStepUp.mockResolvedValue("challenge");
+    const { GET } = await import("@/app/api/foods/route");
+    expect((await GET(req("?q=egg"))).status).toBe(403);
   });
 
   it("429s when throttled", async () => {

@@ -3,10 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { logFood, editLog, softDeleteLog } from "@/lib/dal/logged-foods";
 import { addFoodSchema, editFoodSchema, deleteFoodSchema } from "@/lib/validation/log";
+import { requireStepUp } from "@/lib/dal/session";
 
 export type ActionResult = { ok: true } | { error: string };
 
 export async function addFoodAction(input: unknown): Promise<ActionResult> {
+  await requireStepUp();
   const parsed = addFoodSchema.safeParse(input);
   if (!parsed.success) return { error: "Invalid food entry." };
   await logFood(parsed.data);
@@ -15,6 +17,7 @@ export async function addFoodAction(input: unknown): Promise<ActionResult> {
 }
 
 export async function editFoodAction(input: unknown): Promise<ActionResult> {
+  await requireStepUp();
   const parsed = editFoodSchema.safeParse(input);
   if (!parsed.success) return { error: "Invalid edit." };
   await editLog(parsed.data);
@@ -23,6 +26,7 @@ export async function editFoodAction(input: unknown): Promise<ActionResult> {
 }
 
 export async function deleteFoodAction(input: unknown): Promise<ActionResult> {
+  await requireStepUp();
   const parsed = deleteFoodSchema.safeParse(input);
   if (!parsed.success) return { error: "Invalid delete." };
   await softDeleteLog(parsed.data.id);

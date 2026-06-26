@@ -10,6 +10,9 @@ vi.mock("@/lib/dal/logged-foods", () => ({
 }));
 const revalidatePath = vi.fn();
 vi.mock("next/cache", () => ({ revalidatePath: (...a: unknown[]) => revalidatePath(...a) }));
+vi.mock("@/lib/dal/session", () => ({
+  requireStepUp: () => Promise.resolve({ userId: "u1" }),
+}));
 
 beforeEach(() => { logFood.mockReset(); editLog.mockReset(); softDeleteLog.mockReset(); revalidatePath.mockReset(); });
 
