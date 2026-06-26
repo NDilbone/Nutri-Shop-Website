@@ -51,7 +51,7 @@ export function EnrollForm({ redirectTo = "/today" }: { redirectTo?: string }) {
     <div className="space-y-4">
       {/* qr_code is SVG markup (not script) — safe to inject; no CSP change. */}
       <div className="rounded-md bg-white p-3" dangerouslySetInnerHTML={{ __html: enroll.qrCodeSvg }} />
-      <p className="text-xs text-muted break-all">Can't scan? Enter this secret manually: <code>{enroll.secret}</code></p>
+      <p className="text-xs text-muted break-all">Can&apos;t scan? Enter this secret manually: <code>{enroll.secret}</code></p>
       <Input
         inputMode="numeric"
         autoComplete="one-time-code"
