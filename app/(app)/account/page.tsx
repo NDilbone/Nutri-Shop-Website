@@ -1,10 +1,12 @@
-import { requireUser } from "@/lib/dal/session";
+import Link from "next/link";
+import { requireUser, verifyAdmin } from "@/lib/dal/session";
 import { createClient } from "@/lib/supabase/server";
 import { Card } from "@/components/ui/Card";
 import { SignOutButton } from "@/components/ui/SignOutButton";
 
 export default async function AccountPage() {
   const { userId } = await requireUser();
+  const isAdmin = await verifyAdmin();
   const supabase = await createClient();
   const { data: profile } = await supabase
     .from("profiles").select("id, display_name").eq("id", userId).single();
@@ -19,6 +21,13 @@ export default async function AccountPage() {
       <div className="mt-4">
         <SignOutButton />
       </div>
+      {isAdmin && (
+        <div className="mt-4">
+          <Link href="/admin" className="text-sm text-brand underline">
+            Admin
+          </Link>
+        </div>
+      )}
     </main>
   );
 }
