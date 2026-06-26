@@ -49,6 +49,12 @@ describe("GET /api/foods (search)", () => {
     expect((await GET(req("?q=egg"))).status).toBe(401);
   });
 
+  it("403s when MFA step-up is required", async () => {
+    verifyStepUp.mockResolvedValue("challenge");
+    const { GET } = await import("@/app/api/foods/route");
+    expect((await GET(req("?q=egg"))).status).toBe(403);
+  });
+
   it("429s when throttled", async () => {
     enforceRateLimit.mockRejectedValue(new RateLimitError());
     const { GET } = await import("@/app/api/foods/route");

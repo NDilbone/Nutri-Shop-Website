@@ -72,6 +72,12 @@ describe("GET /api/foods/[fdcId] (detail)", () => {
     expect((await GET(req, ctx("5"))).status).toBe(401);
   });
 
+  it("403s when MFA step-up is required", async () => {
+    verifyStepUp.mockResolvedValue("challenge");
+    const { GET } = await import("@/app/api/foods/[fdcId]/route");
+    expect((await GET(req, ctx("5"))).status).toBe(403);
+  });
+
   it("404s when FDC reports not found", async () => {
     getFoodDetailCached.mockRejectedValue(new FdcError("not_found"));
     const { GET } = await import("@/app/api/foods/[fdcId]/route");
