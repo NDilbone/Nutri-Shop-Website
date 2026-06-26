@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
+import { svgToDataUri } from "@/lib/auth/qr";
 import { startEnrollmentAction, completeMfaAction } from "./actions";
 
 export function EnrollForm({ redirectTo = "/today" }: { redirectTo?: string }) {
@@ -49,8 +50,20 @@ export function EnrollForm({ redirectTo = "/today" }: { redirectTo?: string }) {
 
   return (
     <div className="space-y-4">
-      {/* qr_code is SVG markup (not script) — safe to inject; no CSP change. */}
-      <div className="rounded-md bg-white p-3" dangerouslySetInnerHTML={{ __html: enroll.qrCodeSvg }} />
+      {/* Render the QR as an <img> data URI, NOT via innerHTML: GoTrue colors the SVG
+          with inline style="fill:..." attributes that the prod CSP (style-src nonce-only)
+          strips when injected into the page, rendering it solid black. As an image
+          resource the inline fills survive; img-src already allows data:. */}
+      <div className="w-fit rounded-md bg-white p-3">
+        {/* eslint-disable-next-line @next/next/no-img-element -- QR is an inline data: URI; next/image optimization is inapplicable */}
+        <img
+          src={svgToDataUri(enroll.qrCodeSvg)}
+          alt="Scan this QR code with your authenticator app"
+          width={192}
+          height={192}
+          className="h-48 w-48"
+        />
+      </div>
       <p className="text-xs text-muted break-all">Can&apos;t scan? Enter this secret manually: <code>{enroll.secret}</code></p>
       <Input
         inputMode="numeric"

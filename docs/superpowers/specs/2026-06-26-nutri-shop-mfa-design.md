@@ -225,7 +225,7 @@ For the **challenge** screen the `factorId` is the existing verified factor: `(a
 
 ### 6.3 QR rendering & CSP
 
-`data.totp.qr_code` is **SVG markup** (not script) — render via `dangerouslySetInnerHTML`, plus show `data.totp.secret` for manual entry. **No CSP change** (markup, no inline script); no service-worker change.
+`data.totp.qr_code` is **raw SVG markup** whose module colors are inline `style="fill:..."` attributes (GoTrue uses goqrsvg + svgo). Render it as an **`<img>` data URI** (`svgToDataUri()` → `data:image/svg+xml;utf8,...`), **not** via `dangerouslySetInnerHTML`: injected into the page DOM those inline styles are stripped by the prod CSP (`style-src 'self' 'nonce-...'`, no `'unsafe-inline'`) and the QR renders solid black. As an `<img>` the SVG is an isolated image resource the page `style-src` does not govern, so the fills survive. **No CSP change** — `img-src` already allows `data:`. Also show `data.totp.secret` for manual entry; no service-worker change.
 
 ### 6.4 Admin reset — `lib/dal/admin.ts` (service-role)
 
@@ -274,7 +274,7 @@ No guard function is needed (unlike `banGuard`): reset never permanently locks a
 - **Service-role only in `resetUserMfa`**, behind `requireAdmin()` (itself an aal2 admin session) — the third and final sanctioned service-role op.
 - **Unenroll of a verified factor requires aal2** (Supabase-enforced) — a direct aal1 POST to "disable" fails safely without app-side checks.
 - **No privilege/MFA bypass via the proxy** — the proxy carries no aal logic; the authoritative decision is the server gate. No custom JWT claim/hook to widen the trusted surface.
-- **No new attack surface on the edge** — `/mfa` is authenticated (`requireUser`); no public path added; no CSP or service-worker change (QR is SVG markup).
+- **No new attack surface on the edge** — `/mfa` is authenticated (`requireUser`); no public path added; no CSP or service-worker change (the QR renders as an `<img>` `data:` URI, already allowed by `img-src`).
 - **Members self-disable; admins cannot** — the UI omits Disable for admins, and the gate re-forces enrollment if an admin's factors disappear.
 
 ---
