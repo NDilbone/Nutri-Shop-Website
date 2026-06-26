@@ -23,3 +23,24 @@ export async function requireUser(): Promise<{ userId: string }> {
 export function assertOwnership(rowUserId: string, userId: string): void {
   if (rowUserId !== userId) throw new Error("Forbidden");
 }
+
+/** True iff the current session belongs to an admin. Memoized per render pass.
+ *  Reads the caller's own profile row (allowed by profiles_select_own). */
+export const verifyAdmin = cache(async (): Promise<boolean> => {
+  const session = await verifySession();
+  if (!session) return false;
+  const supabase = await createClient();
+  const { data } = await supabase
+    .from("profiles")
+    .select("is_admin")
+    .eq("id", session.userId)
+    .single();
+  return data?.is_admin === true;
+});
+
+/** Use in any admin-only page or Server Action. Bounces non-admins; reveals nothing. */
+export async function requireAdmin(): Promise<{ userId: string }> {
+  const session = await requireUser();
+  if (!(await verifyAdmin())) redirect("/today");
+  return session;
+}
