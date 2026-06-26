@@ -75,6 +75,10 @@ describe("inviteEmailSchema", () => {
   it("rejects an empty string", () => {
     expect(() => inviteEmailSchema.parse("")).toThrow();
   });
+
+  it("rejects null (a missing form field — formData.get returns null)", () => {
+    expect(() => inviteEmailSchema.parse(null)).toThrow();
+  });
 });
 ```
 
@@ -100,7 +104,7 @@ export const inviteEmailSchema = z
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm test tests/validation/admin.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -186,7 +190,8 @@ export interface BanGuardInput {
   banned: boolean;
   /** Whether the target currently has is_admin. */
   targetIsAdmin: boolean;
-  /** Count of users with is_admin (used for the last-admin guard). */
+  /** Count of NON-BANNED admins (from count_active_admins() — already-banned admins are
+   *  excluded so the last-admin guard cannot be fooled by a banned co-admin). */
   activeAdminCount: number;
 }
 
@@ -323,14 +328,38 @@ begin
 end;
 $$;
 
--- ============ grants (the is_admin() guard is the real gate) ============
-grant execute on function public.is_admin()              to authenticated;
-grant execute on function public.admin_add_invite(text)  to authenticated;
-grant execute on function public.admin_revoke_invite(text) to authenticated;
-grant execute on function public.admin_list_invites()    to authenticated;
-```
+-- ============ active-admin count (for the last-admin ban guard) ============
+-- Counts admins who are NOT currently banned (ban state lives in auth.users,
+-- not profiles). Called by the service-role ban op, which has no auth.uid(), so
+-- this is intentionally NOT is_admin()-gated; it returns only an integer.
+create or replace function public.count_active_admins()
+returns integer
+language sql
+security definer
+set search_path = ''
+stable
+as $$
+  select count(*)::int
+  from public.profiles p
+  join auth.users u on u.id = p.id
+  where p.is_admin and (u.banned_until is null or u.banned_until <= now());
+$$;
 
-> **Note on `auth.users` access:** these definer functions are owned by the migration runner (`postgres`, a superuser on both Supabase cloud and a fresh local stack), so they may read `auth.users`. Step 3 verifies this on a real stack (the Phase-2 implicit-vs-explicit-grant gap). If a fresh stack denies the read, add `grant usage on schema auth to postgres; grant select on auth.users to postgres;` to the migration.
+-- ============ auth.users read access (REQUIRED, unconditional) ============
+-- admin_list_invites() and count_active_admins() read auth.users (owned by
+-- supabase_auth_admin). Supabase cloud's postgres owner already has access, but a
+-- fresh local/CI stack does NOT guarantee it — without this, the first call raises
+-- 42501 and fails rls.yml. Idempotent/harmless where access already exists.
+grant usage on schema auth to postgres;
+grant select on auth.users to postgres;
+
+-- ============ grants (the is_admin() guard is the real gate) ============
+grant execute on function public.is_admin()                to authenticated;
+grant execute on function public.admin_add_invite(text)    to authenticated;
+grant execute on function public.admin_revoke_invite(text) to authenticated;
+grant execute on function public.admin_list_invites()      to authenticated;
+grant execute on function public.count_active_admins()     to service_role;
+```
 
 - [ ] **Step 2: Write the live RLS tests**
 
@@ -407,6 +436,22 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("invite-admin RLS + RPCs", () => {
     );
     expect(row!.status).toBe("joined");
   });
+
+  it("count_active_admins excludes banned admins (last-admin guard fix)", async () => {
+    // Promote plainUser to admin as well, count, then ban them: the active count
+    // must drop by exactly one, proving banned admins are not counted as "active".
+    await admin().from("profiles").update({ is_admin: true }).eq("id", plainUserId);
+    const before = (await admin().rpc("count_active_admins")).data as number;
+    expect(before).toBeGreaterThanOrEqual(2);
+
+    await admin().auth.admin.updateUserById(plainUserId, { ban_duration: "876000h" });
+    const after = (await admin().rpc("count_active_admins")).data as number;
+    expect(after).toBe(before - 1);
+
+    // cleanup so test residue / ordering does not affect other runs
+    await admin().auth.admin.updateUserById(plainUserId, { ban_duration: "none" });
+    await admin().from("profiles").update({ is_admin: false }).eq("id", plainUserId);
+  });
 });
 ```
 
@@ -421,7 +466,7 @@ SUPABASE_TEST_ANON_KEY="$(supabase status -o json | jq -r .ANON_KEY)" \
 SUPABASE_TEST_SERVICE_ROLE_KEY="$(supabase status -o json | jq -r .SERVICE_ROLE_KEY)" \
 REQUIRE_SUPABASE_TESTS=1 pnpm test tests/rls/admin.test.ts --no-file-parallelism
 ```
-Expected: PASS (6 tests). If `admin_list_invites` errors with a permission error on `auth.users`, add the `grant ... on auth.users to postgres` lines from the Step-1 note and re-run `supabase db reset`.
+Expected: PASS (7 tests). The `grant ... on auth.users to postgres` lines are already in the migration (Step 1), so `admin_list_invites` / `count_active_admins` must not raise a `42501` permission error; if they do, the grants did not apply — recheck the migration, do not work around it.
 
 (If no local Supabase/Docker is available, the suite self-skips offline; it runs fail-closed in the `rls.yml` workflow on merge. Note that explicitly in the commit body.)
 
@@ -450,7 +495,7 @@ git commit -m "feat: add is_admin role, escalation lockdown, and admin invite RP
   - `verifyAdmin(): Promise<boolean>` — true iff the current session belongs to an admin (memoized).
   - `requireAdmin(): Promise<{ userId: string }>` — redirects non-admins to `/today`; returns the session otherwise.
 
-This is wiring (no unit test — the repo does not mock-test `requireUser` either; enforcement is proven live in `tests/rls/admin.test.ts` and manual e2e).
+This is wiring. The **DB-level** admin gate (the `is_admin()` RPC self-check and the column-grant escalation block) is proven live in `tests/rls/admin.test.ts`. `requireAdmin()`/`verifyAdmin()` themselves — the redirect/bounce path — follow the same untested-wiring convention as `requireUser()` (the repo does not mock-test it either) and are covered by manual e2e (§8.3). Do not claim the RLS test exercises the TS helpers; it does not.
 
 - [ ] **Step 1: Add the helpers**
 
@@ -569,7 +614,7 @@ git commit -m "feat: add invite admin DAL (list/add/revoke via gated RPCs)"
 - Modify: `lib/supabase/admin.ts`
 
 **Interfaces:**
-- Consumes: `createAdminClient` from `@/lib/supabase/admin`; `banGuard` from `@/lib/admin/ban-guard`; the same-file `revokeInvite` not used here (revoke done directly via admin client).
+- Consumes: `createAdminClient` from `@/lib/supabase/admin`; `banGuard` from `@/lib/admin/ban-guard`; the `count_active_admins` RPC from migration `0006`.
 - Produces: `setUserBanned(args: { actorId: string; targetUserId: string; banned: boolean }): Promise<void>`
 
 - [ ] **Step 1: Update the admin-client doc comment**
@@ -583,17 +628,26 @@ In `lib/supabase/admin.ts`, replace the JSDoc on `createAdminClient` with:
  *  NEVER expose to the client; never use in the normal authenticated request path. */
 ```
 
-- [ ] **Step 2: Append `setUserBanned` to `lib/dal/admin.ts`**
+- [ ] **Step 2: Add `setUserBanned` to `lib/dal/admin.ts`**
+
+First add these two imports to the **existing import block at the top** of the file (Task 5 already created it):
 
 ```ts
 import { createAdminClient } from "@/lib/supabase/admin";
 import { banGuard } from "@/lib/admin/ban-guard";
+```
 
+Then append the constant and function at the **end** of the file:
+
+```ts
 const PERMANENT_BAN = "876000h"; // ~100 years; Supabase ban_duration string
 
 /** Reversibly ban/unban a user via the Auth admin API. The ONLY service-role op in
- *  this DAL. On ban, also revokes their invite so they can't re-signup around it.
- *  Caller MUST be admin (gated in the Server Action); banGuard blocks self/last-admin. */
+ *  this DAL. The invite row is intentionally LEFT INTACT — re-entry is already blocked
+ *  by the existing account (re-signup is a duplicate) plus the ban; deleting the invite
+ *  would hide the banned user from the invite-rooted admin list and break re-enable.
+ *  Caller MUST be admin (gated in the Server Action); banGuard blocks self / last-admin.
+ *  activeAdminCount comes from count_active_admins() so already-banned admins are excluded. */
 export async function setUserBanned(args: {
   actorId: string;
   targetUserId: string;
@@ -601,40 +655,29 @@ export async function setUserBanned(args: {
 }): Promise<void> {
   const adminClient = createAdminClient();
 
-  // Facts for the guard: is the target an admin, and how many admins exist.
+  // Facts for the guard: is the target an admin, and how many admins are still ACTIVE
+  // (count_active_admins excludes banned admins — a plain is_admin count would not).
   const { data: targetProfile } = await adminClient
     .from("profiles")
     .select("is_admin")
     .eq("id", args.targetUserId)
     .single();
-  const { count } = await adminClient
-    .from("profiles")
-    .select("id", { count: "exact", head: true })
-    .eq("is_admin", true);
+  const { data: activeAdmins, error: countErr } = await adminClient.rpc("count_active_admins");
+  if (countErr) throw new Error("failed to count active admins");
 
   const decision = banGuard({
     actorId: args.actorId,
     targetUserId: args.targetUserId,
     banned: args.banned,
     targetIsAdmin: targetProfile?.is_admin === true,
-    activeAdminCount: count ?? 0,
+    activeAdminCount: (activeAdmins as number) ?? 0,
   });
   if (!decision.allowed) throw new Error(decision.reason);
-
-  const { data: target, error: getErr } = await adminClient.auth.admin.getUserById(
-    args.targetUserId,
-  );
-  if (getErr || !target.user) throw new Error("user not found");
 
   const { error } = await adminClient.auth.admin.updateUserById(args.targetUserId, {
     ban_duration: args.banned ? PERMANENT_BAN : "none",
   });
   if (error) throw new Error("failed to update user ban state");
-
-  // On ban, revoke the invite so a re-signup can't mint a fresh account around the ban.
-  if (args.banned && target.user.email) {
-    await adminClient.from("invites").delete().eq("email", target.user.email.toLowerCase());
-  }
 }
 ```
 
@@ -670,6 +713,7 @@ git commit -m "feat: add reversible user ban (service-role, guarded) to the admi
 // app/(app)/admin/actions.ts
 "use server";
 
+import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/dal/session";
 import { addInvite, revokeInvite, setUserBanned } from "@/lib/dal/admin";
@@ -691,7 +735,10 @@ export async function revokeInviteAction(email: string): Promise<void> {
 
 export async function setBanAction(targetUserId: string, banned: boolean): Promise<void> {
   const { userId } = await requireAdmin();
-  await setUserBanned({ actorId: userId, targetUserId, banned });
+  // Validate the client-supplied id shape (boundary input). Any admin may target any
+  // user id by design — this just fails fast on malformed input; banGuard enforces the rest.
+  const id = z.uuid().parse(targetUserId);
+  await setUserBanned({ actorId: userId, targetUserId: id, banned });
   revalidatePath("/admin");
 }
 ```
@@ -781,7 +828,7 @@ export function AdminView({ invites }: { invites: InviteRow[] }) {
         <Button type="submit" disabled={pending}>Add</Button>
       </form>
 
-      {error && <p className="text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
 
       <ul className="divide-y divide-border">
         {invites.map((inv) => (
@@ -796,7 +843,7 @@ export function AdminView({ invites }: { invites: InviteRow[] }) {
                 type="button"
                 disabled={pending}
                 onClick={() => {
-                  if (confirm(`Revoke the invite for ${inv.email}?`)) run(() => revokeInviteAction(inv.email));
+                  if (window.confirm(`Revoke the invite for ${inv.email}?`)) run(() => revokeInviteAction(inv.email));
                 }}
               >
                 Revoke
@@ -808,7 +855,7 @@ export function AdminView({ invites }: { invites: InviteRow[] }) {
                 type="button"
                 disabled={pending}
                 onClick={() => {
-                  if (confirm(`Disable ${inv.email}? They will be logged out and cannot sign back in.`))
+                  if (window.confirm(`Disable ${inv.email}? They will be logged out and cannot sign back in.`))
                     run(() => setBanAction(inv.user_id!, true));
                 }}
               >
@@ -856,12 +903,19 @@ git commit -m "feat: add /admin invite-management screen"
 
 - [ ] **Step 1: Edit the account page**
 
-Add the import and the conditional link. The page already loads the profile; add the admin check and render a link below the sign-out button:
+This is an **additive edit**, NOT a full-file replacement — keep the existing `createClient` / `Card` / `SignOutButton` imports. Make exactly these three changes:
+1. Change the existing session import to also pull `verifyAdmin`: `import { requireUser, verifyAdmin } from "@/lib/dal/session";`
+2. Add `import Link from "next/link";` to the import block.
+3. Add `const isAdmin = await verifyAdmin();` after the `requireUser()` call, and render the conditional link after the sign-out `<div>`.
+
+The full file after the edit (preserving all existing imports):
 
 ```tsx
 import Link from "next/link";
 import { requireUser, verifyAdmin } from "@/lib/dal/session";
-// ...existing imports...
+import { createClient } from "@/lib/supabase/server";
+import { Card } from "@/components/ui/Card";
+import { SignOutButton } from "@/components/ui/SignOutButton";
 
 export default async function AccountPage() {
   const { userId } = await requireUser();
@@ -913,7 +967,7 @@ git commit -m "feat: surface the Admin link on /account for admins only"
 
 - [ ] **Step 1: Add an Admin section**
 
-Insert after the "Offline shopping list (Phase 5)" section:
+Insert the new `## Admin (Phase 6A)` section **immediately before the `## Database migrations` heading** (i.e. after the Phase 5 "Related changes" subsection, around line 101) — do NOT split the Phase 5 content:
 
 ```markdown
 ## Admin (Phase 6A)
@@ -921,8 +975,10 @@ Insert after the "Offline shopping list (Phase 5)" section:
 Invite management lives in-app at `/admin`, gated to admin users (`profiles.is_admin`).
 Admins can add an invite email (allowlist-only — the invitee then self-signs-up),
 see each invite's status (pending / joined / banned), revoke a pending invite, and
-**disable** (reversibly ban) or **re-enable** a joined user. Disabling also revokes
-the user's invite so they cannot sign back up around the ban. There is no hard delete.
+**disable** (reversibly ban) or **re-enable** a joined user. Disabling keeps the user's
+data and leaves their invite intact (they stay listed so they can be re-enabled);
+re-entry is already blocked because their account exists and the ban prevents login.
+There is no hard delete.
 
 The **Admin** link appears on `/account` only for admins.
 
@@ -965,8 +1021,8 @@ git commit -m "docs: document the admin invite screen and first-admin bootstrap"
 - §3.3 three RPCs (add/revoke/list w/ status) → Task 3 + RLS tests. ✓
 - §4.1 `requireAdmin` → Task 4. ✓
 - §4.2 invite ops without service-role → Task 5 + Task 7. ✓
-- §4.3 ban via service-role + invite-revoke → Task 6. ✓
-- §4.4 ban guard (self/last-admin) → Task 2. ✓
+- §4.3 ban via service-role, **invite left intact** → Task 6. ✓
+- §4.4 ban guard (self/last-admin), active-admin count excludes banned (`count_active_admins`) → Task 2 (pure guard) + Task 3 (RPC + exclusion test) + Task 6 (wires the count). ✓
 - §5 route/UI/nav + account entry → Tasks 8, 9. ✓
 - §6 bootstrap → Task 10 (README), migration sets no admin (Task 3). ✓
 - §8 testing (email schema, banGuard, RLS escalation/gates/status) → Tasks 1, 2, 3. ✓
@@ -977,3 +1033,12 @@ git commit -m "docs: document the admin invite screen and first-admin bootstrap"
 **3. Type consistency:** `InviteRow`/`InviteStatus` defined in Task 5, consumed in Tasks 8/9; `banGuard`/`BanGuardInput` defined in Task 2, consumed in Task 6; `setUserBanned` signature defined in Task 6, consumed in Task 7; `requireAdmin`/`verifyAdmin` defined in Task 4, consumed in Tasks 7/8/9; `inviteEmailSchema` defined in Task 1, consumed in Task 7. RPC names (`admin_add_invite`/`admin_revoke_invite`/`admin_list_invites`/`is_admin`) consistent between Task 3 SQL and Task 5 DAL. ✓
 
 **4. Dependency order:** 1 → 2 → 3 (independent pure/DB) → 4 (gate) → 5 (invite DAL, creates `lib/dal/admin.ts`) → 6 (extends it) → 7 (actions) → 8 (UI) → 9 (account link) → 10 (docs). No forward references. ✓
+
+## Adversarial verification (folded in)
+
+A 6-lens + adjudicator workflow reviewed this plan against the spec and the real codebase. Folded fixes:
+- **Breaker:** ban deleted the invite while `admin_list_invites` is invite-rooted → banned users vanished, `banned` status + Re-enable unreachable. **Fixed:** ban now leaves the invite intact (re-entry is already blocked by the existing account + the ban). Spec §1/§2/§4.3/§8.3/§10 and the Task 10 README copy updated to match.
+- **Important:** last-admin guard counted all `is_admin` rows incl. already-banned admins → potential lockout. **Fixed:** added `count_active_admins()` (excludes banned) + its RLS exclusion test; `setUserBanned` uses it.
+- **Important:** `0006` shipped no `auth.users` grant → fresh CI stack could raise `42501`. **Fixed:** unconditional `grant usage on schema auth to postgres; grant select on auth.users to postgres;`.
+- **Minors:** `text-danger`+`role="alert"` for the error line; `window.confirm`; explicit additive Task 9 edit; imports-at-top in Task 6; explicit README insertion point; `z.uuid()` on `targetUserId`; Task 4 wording; null-case validation test.
+- **Rejected (false positives):** "bare `confirm()` fails lint" and "mid-file imports fail lint" — neither breaks the build (kept as style-only).

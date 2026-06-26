@@ -26,7 +26,7 @@ An admin user opens an in-app **Admin** screen and can:
 - **Add** an email to the invite allowlist so that person may sign up.
 - **See** every invited email with its status — *pending* (no account yet), *joined* (account exists), or *banned* (account disabled).
 - **Revoke** a pending invite so the email can no longer be used to sign up.
-- **Disable / re-enable** a joined user — a reversible ban that locks them out of login but keeps their data, and which also revokes their invite so they cannot sign up into a fresh account around the ban.
+- **Disable / re-enable** a joined user — a reversible ban that locks them out of login but keeps their data. Re-entry needs no invite change: their account email already exists in `auth.users`, so a re-signup is rejected as a duplicate, and the ban blocks login. The invite row is left intact so the banned user stays listed and re-enableable.
 
 Today, invites are added only by hand via the Supabase dashboard SQL editor. 6A moves that into the product, gated behind an admin role, with no new exposure of the `invites` or `auth.users` tables and the smallest possible use of the service-role key.
 
@@ -47,7 +47,7 @@ Today, invites are added only by hand via the Supabase dashboard SQL editor. 6A 
 |---|----------|-----------|
 | Admin model | A boolean **`is_admin` on `profiles`**, default `false`. | Smallest primitive that supports >1 admin and is reusable by 6B/6C. No env-coupling, no roles table. |
 | Access model | **Approach 1 (hybrid):** invite add/list/revoke via admin-gated `SECURITY DEFINER` RPCs (no service-role); **ban** via the service-role admin client (the only op with no safe SQL equivalent). | Keeps the service-role surface to the single operation that genuinely needs it; mirrors the vetted RPC+RLS-test pattern (`sync_shopping_items`). |
-| Remove semantics | **Reversible ban** (`ban_duration`), data retained, re-enable supported; ban also **revokes the invite**. No hard delete. | No destructive path from a single web tap; "stop their access" is fully met reversibly. Revoking the invite stops re-signup into a fresh account. |
+| Remove semantics | **Reversible ban** (`ban_duration`), data retained, re-enable supported. The invite row is **left intact**. No hard delete. | No destructive path from a single web tap; "stop access" met reversibly. Re-signup is already blocked (the account email exists), so the invite need not change — and deleting it would drop the banned user out of the invite-rooted admin list, making re-enable impossible. |
 | Invite delivery | **Allowlist-only**; invitee self-signs-up. No email sent. | Matches today's gate flow exactly; avoids an email template + service-role on "add". |
 | Escalation lockdown | `is_admin` is **never** user-writable: tighten `profiles` to a **column-level `update` grant** on `display_name` only. | `0001` granted whole-row `update` to `authenticated`; with `profiles_update_own` a user could self-promote. This closes it. Load-bearing. |
 | Status source | Derived live in the list RPC by left-joining `invites` to `auth.users` on email; nothing about `auth.users` is exposed via RLS. | No schema bloat (no `accepted_at`); a definer RPC owned by `postgres` may read `auth.users`. |
@@ -115,8 +115,17 @@ Each begins with `if not public.is_admin() then raise exception 'forbidden' usin
   left join auth.users u on lower(u.email) = i.email
   order by i.invited_at desc;
   ```
+- **`count_active_admins() returns integer`** — supports the ban guard's last-admin check; counts admins who are **not** currently banned. Called by `setUserBanned` via the service-role client, so it is **not** gated on `is_admin()` (a service-role caller has no `auth.uid()`); it returns only an integer, no sensitive data.
+  ```sql
+  select count(*)::int
+  from public.profiles p
+  join auth.users u on u.id = p.id
+  where p.is_admin and (u.banned_until is null or u.banned_until <= now());
+  ```
 
-All three: `SECURITY DEFINER`, `set search_path = ''`, owned by the migration runner (`postgres`) so the list RPC may read `auth.users`. `grant execute … to authenticated` (the `is_admin()` guard is the real gate; a non-admin caller raises `forbidden`).
+The three invite RPCs: `SECURITY DEFINER`, `set search_path = ''`, owned by the migration runner (`postgres`), `grant execute … to authenticated` (the `is_admin()` guard is the real gate; a non-admin caller raises `forbidden`). `count_active_admins()` is also `SECURITY DEFINER` but `grant execute … to service_role` (its only caller).
+
+**`auth.users` read access:** the list and count functions read `auth.users` (owned by `supabase_auth_admin`). On Supabase cloud the `postgres` function owner already has access, but a fresh local/CI stack does not guarantee it — so `0006` grants it **explicitly and unconditionally** (`grant usage on schema auth to postgres; grant select on auth.users to postgres;`) to stay portable (the Phase-2 implicit-vs-explicit-grant lesson).
 
 Emails are normalized to lowercase on write and compared lowercase on join, matching how the existing gate trigger keys `invites.email`.
 
@@ -169,10 +178,9 @@ async function setUserBanned(targetUserId: string, banned: boolean) {
   await admin.auth.admin.updateUserById(targetUserId, {
     ban_duration: banned ? "876000h" : "none",       // ~100y ban, or lift
   });
-  if (banned) {
-    // revoke their invite so a re-signup can't mint a fresh account around the ban
-    await supabase.rpc("admin_revoke_invite", { p_email: <their email> });
-  }
+  // The invite row is intentionally LEFT INTACT (see §2 "Remove semantics"):
+  // deleting it would drop the banned user out of the invite-rooted list and make
+  // re-enable impossible; re-signup is already blocked because the account exists.
   revalidatePath("/admin");
 }
 ```
@@ -187,6 +195,8 @@ Returns `{ allowed: false, reason }` when:
 - **Last admin:** target `is_admin` and they are the only non-banned admin → block ("cannot disable the last admin").
 
 Otherwise allowed. The caller supplies the admin/ban facts (target's `is_admin`, count of active admins) so the function stays pure. Re-enable (`banned === false`) is always allowed.
+
+The **active-admin count must exclude already-banned admins** (ban state lives in `auth.users.banned_until`, not `profiles`), or the guard can be fooled — two admins where one is already banned would report a count of 2 and allow banning the only live one. A `SECURITY DEFINER` helper `count_active_admins()` (§3.3) computes this by joining `profiles` to `auth.users`; `setUserBanned` calls it and passes the result as `activeAdminCount`.
 
 > **Decision (approved):** guards are *self-ban* + *last-admin* only. Banning a non-last admin is permitted (a second admin can discipline another); the last-admin guard prevents total lockout. A `banned` access token already issued remains valid until its ~1h expiry — documented, acceptable for a family app.
 
@@ -221,7 +231,7 @@ This is intentionally **not** committed (keeps the admin email out of the repo).
 ## 7. Security invariants (held)
 
 - **No service-role in the normal request path** — only `setUserBanned` uses it, behind `requireAdmin()`.
-- **`invites` and `auth.users` stay unexposed** — no RLS policy is added to either; all access is through admin-gated `SECURITY DEFINER` RPCs that self-check `is_admin()`.
+- **`invites` and `auth.users` stay unexposed** — no RLS policy is added to either; invite reads/writes go through `is_admin()`-gated `SECURITY DEFINER` RPCs. The one exception, `count_active_admins()`, is not `is_admin()`-gated (its caller is the service-role ban op, which has no `auth.uid()`), but it returns only an integer count and is granted to `service_role` only — no row data is exposed.
 - **No privilege escalation** — `is_admin` is unwritable by `authenticated` (column grant); only definer functions / service-role can set it.
 - **Defense in depth** — proxy optimistic redirect → `requireUser()` (Gate 2) → `requireAdmin()` (admin gate) → RPC `is_admin()` self-check (DB-level). A bug in any one layer is backstopped by the next.
 - **No new attack surface on the edge** — no CSP, service-worker, or public-path change; `/admin` is just another authenticated route.
@@ -244,7 +254,7 @@ Mirrors prior phases (pure-fn node unit tests + live RLS integration in `rls.yml
 - Admin calling each → succeeds; `admin_list_invites` reports correct `pending` / `joined` status for seeded fixtures.
 
 ### 8.3 Manual e2e (deployed app)
-Add invite → appears *pending* → invitee signs up → flips to *joined* → **Disable** → invitee can no longer log in and their invite is gone → **Re-enable** → invitee can log in again → **Revoke** a different pending invite → that email can no longer sign up. Confirm a non-admin sees no Admin link and is bounced from `/admin`.
+Add invite → appears *pending* → invitee signs up → flips to *joined* → **Disable** → invitee can no longer log in and the row shows *banned* (still listed) → **Re-enable** → row returns to *joined* and the invitee can log in again → **Revoke** a different pending invite → that email can no longer sign up. Confirm a non-admin sees no Admin link and is bounced from `/admin`.
 
 The ban Auth-API call itself is exercised by manual e2e (no service-role in CI); its decision logic is covered by `banGuard()` unit tests.
 
@@ -260,8 +270,8 @@ The ban Auth-API call itself is exercised by manual e2e (no service-role in CI);
 
 ## 10. Open risks / notes for the plan + adversarial pass
 
-- **`auth.users` readability inside the definer RPC.** The list RPC relies on the `postgres`-owned definer being able to `select … from auth.users`. Verify on the real project and in the fresh CI stack (the same implicit-vs-explicit-grant gap that bit Phase 2's local RLS run). If a fresh stack denies it, add an explicit `grant select on auth.users to postgres` (or scope the read) in `0006`.
-- **`banned_until` column.** Confirm the column name/semantics exposed by the installed `gotrue`/Supabase version for the status derivation; `auth.users.banned_until` is the expected field.
-- **Re-enable vs invite.** Re-enabling restores login on the existing account (the signup gate does not re-fire on login), so the earlier invite-revoke does not need to be undone. Documented so it isn't "fixed" into re-adding the invite.
+- **`auth.users` readability inside the definer RPC.** The list and count functions `select … from auth.users`. `0006` grants this **unconditionally** (`grant usage on schema auth to postgres; grant select on auth.users to postgres;`) so a fresh CI stack does not raise `42501` (the implicit-vs-explicit-grant gap that bit Phase 2's local RLS run). Not left as a conditional afterthought — the migration is committed regardless of the local run.
+- **`banned_until` column.** Confirm the column name/semantics exposed by the installed `gotrue`/Supabase version for the status derivation and the active-admin count; `auth.users.banned_until` is the expected field.
+- **Invite left intact on ban.** Ban does **not** delete the invite (corrected from the initial brainstorm). Re-entry is blocked by the existing account (re-signup is a duplicate) plus the ban, not by removing the invite — and removing it would drop the user out of the invite-rooted list, making re-enable impossible. The §8.3 disable→re-enable round-trip depends on this.
 - **Active-session lag on ban.** A pre-issued access token survives until ~1h expiry. If immediate cutoff is ever required, a future enhancement can also `auth.admin.signOut`/revoke sessions — out of scope for 6A.
 - **Escalation regression guard.** The column grant is the single thing standing between a user and self-promotion; the §8.2 escalation test must be treated as non-skippable.
