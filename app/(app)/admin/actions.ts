@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/dal/session";
 import { addInvite, revokeInvite, setUserBanned } from "@/lib/dal/admin";
 import { inviteEmailSchema } from "@/lib/validation/admin";
+import { resetUserMfa } from "@/lib/dal/mfa";
 
 export async function addInviteAction(formData: FormData): Promise<void> {
   await requireAdmin();
@@ -26,5 +27,12 @@ export async function setBanAction(targetUserId: string, banned: boolean): Promi
   // user id by design — this just fails fast on malformed input; banGuard enforces the rest.
   const id = z.uuid().parse(targetUserId);
   await setUserBanned({ actorId: userId, targetUserId: id, banned });
+  revalidatePath("/admin");
+}
+
+export async function resetUserMfaAction(targetUserId: string): Promise<void> {
+  await requireAdmin();
+  const id = z.uuid().parse(targetUserId);
+  await resetUserMfa(id);
   revalidatePath("/admin");
 }
