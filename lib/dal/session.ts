@@ -30,11 +30,12 @@ export const verifyAdmin = cache(async (): Promise<boolean> => {
   const session = await verifySession();
   if (!session) return false;
   const supabase = await createClient();
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("profiles")
     .select("is_admin")
     .eq("id", session.userId)
     .single();
+  if (error) return false;
   return data?.is_admin === true;
 });
 
