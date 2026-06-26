@@ -2,6 +2,7 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { MFA_ISSUER } from "@/lib/auth/mfa-issuer";
 
 export interface EnrollResult {
   factorId: string;
@@ -22,8 +23,10 @@ export async function enrollTotp(): Promise<EnrollResult> {
       .filter((f) => f.status === "unverified")
       .map((f) => supabase.auth.mfa.unenroll({ factorId: f.id })),
   );
-  // friendlyName intentionally omitted to avoid the unique-name collision.
-  const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp" });
+  // friendlyName intentionally omitted to avoid the unique-name collision. issuer sets the
+  // label users see in their authenticator app (else GoTrue defaults it to the project Site
+  // URL host, e.g. "localhost:3000").
+  const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp", issuer: MFA_ISSUER });
   if (error || !data) throw new Error("failed to start MFA enrollment");
   return { factorId: data.id, qrCode: data.totp.qr_code, secret: data.totp.secret };
 }

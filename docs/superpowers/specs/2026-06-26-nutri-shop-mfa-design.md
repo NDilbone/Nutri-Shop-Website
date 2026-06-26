@@ -209,8 +209,10 @@ await Promise.all(
     .map((f) => supabase.auth.mfa.unenroll({ factorId: f.id })),
 );
 
-const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp" });
-// friendlyName intentionally omitted to avoid the unique-name collision.
+const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp", issuer: MFA_ISSUER });
+// friendlyName intentionally omitted to avoid the unique-name collision. issuer ("Nutri-Shop",
+// from lib/auth/mfa-issuer.ts) sets the label in the authenticator app; without it GoTrue
+// defaults to the project Site URL host (e.g. "localhost:3000").
 // Return to the client: data.id (factorId), data.totp.qr_code (SVG markup), data.totp.secret.
 ```
 
