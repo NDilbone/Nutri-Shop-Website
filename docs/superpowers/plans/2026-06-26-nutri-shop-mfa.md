@@ -873,7 +873,7 @@ Expected: `package.json` devDependencies gains `otplib`.
 ```ts
 // tests/rls/mfa.test.ts
 import { describe, it, expect, beforeAll } from "vitest";
-import { authenticator } from "otplib";
+import { generateSync } from "otplib";
 import { HAS_SUPABASE_TEST_ENV, makeUser, admin } from "./helpers";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -889,7 +889,7 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("MFA enroll/verify/reset round-trip", ()
   it("enrolls TOTP, verifies a generated code, and reaches aal2", async () => {
     const { data: enroll, error: enrollErr } = await user.auth.mfa.enroll({ factorType: "totp" });
     expect(enrollErr).toBeNull();
-    const code = authenticator.generate(enroll!.totp.secret);
+    const code = generateSync({ secret: enroll!.totp.secret });
     const { error: verifyErr } = await user.auth.mfa.challengeAndVerify({ factorId: enroll!.id, code });
     expect(verifyErr).toBeNull();
 
@@ -911,6 +911,8 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("MFA enroll/verify/reset round-trip", ()
   });
 });
 ```
+
+**Note:** otplib v13 (the current latest stable) replaced the legacy `authenticator.generate` API with `generateSync({ secret })`. The code above uses the v13 API.
 
 - [ ] **Step 3: Run (with test env) / confirm skip (without)**
 

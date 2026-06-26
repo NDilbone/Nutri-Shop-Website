@@ -1,5 +1,5 @@
 // tests/rls/mfa.test.ts
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { generateSync } from "otplib";
 import { HAS_SUPABASE_TEST_ENV, makeUser, admin } from "./helpers";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -11,6 +11,10 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("MFA enroll/verify/reset round-trip", ()
   beforeAll(async () => {
     user = await makeUser("mfa-user@example.com", "MfaUser-pw-1234!");
     userId = (await user.auth.getUser()).data.user!.id;
+  });
+
+  afterAll(async () => {
+    if (userId) await admin().auth.admin.deleteUser(userId);
   });
 
   it("enrolls TOTP, verifies a generated code, and reaches aal2", async () => {

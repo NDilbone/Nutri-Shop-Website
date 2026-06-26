@@ -44,6 +44,9 @@ export const verifyAdmin = cache(async (): Promise<boolean> => {
  *  route handlers (which must return JSON, not redirect). Memoized per render pass. */
 export const verifyStepUp = cache(async (): Promise<MfaRequirement> => {
   const supabase = await createClient();
+  // We read only `data` (ignore the error) deliberately: on an AAL fetch failure
+  // the nullish-coalescing below yields aal1 — which fails SAFE (an admin → "enroll"
+  // → /mfa; a member → their correct aal1 baseline), never up-leveling access.
   const { data } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
   const isAdmin = await verifyAdmin();
   return mfaRequirement({
