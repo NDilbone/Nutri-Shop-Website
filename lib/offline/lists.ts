@@ -1,7 +1,10 @@
 import type { ListMeta } from "@/lib/dal/shopping-list";
+import type { ShoppingListItem } from "@/lib/shopping/types";
 
 export type ListKind = "personal" | "household";
 export type LocalListMeta = { id: string; householdId: string | null; name: string; kind: ListKind };
+
+export type DisplayItem = ShoppingListItem & { listId: string };
 
 export function toLocalListMeta(lists: ListMeta[]): LocalListMeta[] {
   return lists.map((l) => ({
@@ -36,4 +39,14 @@ export function personalListId(lists: LocalListMeta[]): string | null {
 
 export function householdList(lists: LocalListMeta[]): LocalListMeta | null {
   return lists.find((l) => l.kind === "household") ?? null;
+}
+
+export function splitByList(
+  items: DisplayItem[],
+  personalId: string | null,
+  householdId: string | null,
+): { personal: DisplayItem[]; household: DisplayItem[] } {
+  const personal = items.filter((i) => i.listId === personalId);
+  const household = householdId ? items.filter((i) => i.listId === householdId) : [];
+  return { personal, household };
 }

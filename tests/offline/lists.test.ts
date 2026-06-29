@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { ListMeta } from "@/lib/dal/shopping-list";
 import {
   toLocalListMeta, accessibleListIds, listsToPrune, partitionPushable,
-  personalListId, householdList,
+  personalListId, householdList, splitByList,
 } from "@/lib/offline/lists";
 
 const P = "11111111-1111-1111-1111-111111111111";
@@ -41,5 +41,23 @@ describe("offline list helpers", () => {
     expect(personalListId(local)).toBe(P);
     expect(householdList(local)!.id).toBe(H);
     expect(householdList(toLocalListMeta(lists.slice(0, 1)))).toBeNull();
+  });
+});
+
+describe("splitByList", () => {
+  const item = (id: string, listId: string) => ({
+    id, listId, name: id, quantity: null, category: null, fdcId: null, checked: false, createdAt: "t",
+  });
+  it("partitions display items into personal vs household by listId", () => {
+    const items = [item("a", "P"), item("b", "H"), item("c", "P")];
+    const { personal, household } = splitByList(items, "P", "H");
+    expect(personal.map((i) => i.id)).toEqual(["a", "c"]);
+    expect(household.map((i) => i.id)).toEqual(["b"]);
+  });
+  it("returns empty household when there is no household list id", () => {
+    const items = [item("a", "P")];
+    const { personal, household } = splitByList(items, "P", null);
+    expect(personal).toHaveLength(1);
+    expect(household).toHaveLength(0);
   });
 });
