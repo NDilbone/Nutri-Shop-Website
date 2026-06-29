@@ -1,8 +1,11 @@
 "use client";
 import Dexie, { type Table } from "dexie";
 import { generateContentKey } from "./crypto";
+import type { LocalListMeta } from "./lists";
 
 export const EPOCH_CURSOR = "1970-01-01T00:00:00.000Z";
+
+export type ListRow = LocalListMeta; // { id, householdId, name, kind }
 
 export type StoredItem = {
   id: string;
@@ -23,6 +26,7 @@ export class ListDb extends Dexie {
   items!: Table<StoredItem, string>;
   meta!: Table<MetaRow, string>;
   keyv!: Table<KeyRow, string>;
+  lists!: Table<ListRow, string>;
 
   constructor(userId: string) {
     super(`ns-list-${userId}`);
@@ -30,6 +34,14 @@ export class ListDb extends Dexie {
       items: "id, listId, dirty, updatedAt",
       meta: "key",
       keyv: "id",
+    });
+    // v2: add the lists store (additive — no data migration; it backfills from the
+    // next sync's getMyLists). `kind` is indexed so personal/household reads are cheap.
+    this.version(2).stores({
+      items: "id, listId, dirty, updatedAt",
+      meta: "key",
+      keyv: "id",
+      lists: "id, kind",
     });
   }
 }
@@ -81,4 +93,20 @@ export async function deleteForeignDbs(currentUserId: string): Promise<void> {
       .filter((n): n is string => !!n && n.startsWith("ns-list-") && n !== keep)
       .map((n) => Dexie.delete(n)),
   );
+}
+
+export async function upsertLocalLists(db: ListDb, rows: ListRow[]): Promise<void> {
+  await db.lists.bulkPut(rows);
+}
+
+export async function readLocalLists(db: ListDb): Promise<ListRow[]> {
+  return db.lists.toArray();
+}
+
+/** Drop a list and every item belonging to it (prune-on-revocation). */
+export async function deleteListAndItems(db: ListDb, listId: string): Promise<void> {
+  await db.transaction("rw", db.items, db.lists, async () => {
+    await db.items.where("listId").equals(listId).delete();
+    await db.lists.delete(listId);
+  });
 }
