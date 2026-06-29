@@ -89,8 +89,13 @@ create policy "shopping_list_items_delete_member" on public.shopping_list_items
 
 -- ============ broaden shopping_lists SELECT only; writes stay owner-only ============
 drop policy "shopping_lists_select_own" on public.shopping_lists;
+-- The direct owner_id disjunct short-circuits before can_access_list (a SECURITY
+-- DEFINER self-query that an INSERT ... RETURNING cannot see the new row through),
+-- so owner inserts on a personal list still read their row back. It is safe against
+-- the revocation hole because leave_household reassigns a shared list's owner_id to a
+-- remaining member, so a departed creator is never owner_id here.
 create policy "shopping_lists_select_accessible" on public.shopping_lists
-  for select using ( public.can_access_list(id) );
+  for select using ( (select auth.uid()) = owner_id or public.can_access_list(id) );
 -- insert/update/delete policies from 0004 are unchanged (owner-only).
 
 -- ============ household-table RLS: SELECT-only, recursion-safe via the helper ============
