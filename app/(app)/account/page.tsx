@@ -2,9 +2,11 @@ import Link from "next/link";
 import { requireUser, verifyAdmin } from "@/lib/dal/session";
 import { getOwnMfaStatus } from "@/lib/dal/mfa";
 import { createClient } from "@/lib/supabase/server";
+import { getMyHousehold, getMembers, getPendingInvites } from "@/lib/dal/household";
 import { Card } from "@/components/ui/Card";
 import { SignOutButton } from "@/components/ui/SignOutButton";
 import { MfaSection } from "./MfaSection";
+import { HouseholdSection } from "./HouseholdSection";
 
 export default async function AccountPage() {
   const { userId } = await requireUser();
@@ -13,6 +15,10 @@ export default async function AccountPage() {
   const supabase = await createClient();
   const { data: profile } = await supabase
     .from("profiles").select("id, display_name").eq("id", userId).single();
+
+  const household = await getMyHousehold();
+  const members = household ? await getMembers(household.id) : [];
+  const invites = await getPendingInvites();
 
   return (
     <main className="p-4">
@@ -23,6 +29,8 @@ export default async function AccountPage() {
       </Card>
 
       <MfaSection isAdmin={isAdmin} hasFactor={hasVerifiedFactor} factorId={verifiedFactorId} />
+
+      <HouseholdSection household={household} members={members} invites={invites} memberCount={members.length} />
 
       <div className="mt-4">
         <SignOutButton />
