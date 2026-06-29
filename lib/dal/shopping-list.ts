@@ -157,3 +157,20 @@ export async function getChangesSince(
   const items = (data ?? []) as ServerItemRow[];
   return { items, cursor: nextCursor(items.map((r) => r.updated_at), cursor) };
 }
+
+export type ListMeta = { id: string; householdId: string | null; name: string; isDefault: boolean };
+
+/** Every list the caller can access (personal default + the household shared list, if a
+ *  member). RLS (shopping_lists_select_accessible) scopes the result; no list_id filter. */
+export async function getMyLists(): Promise<ListMeta[]> {
+  await requireUser();
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("shopping_lists")
+    .select("id, household_id, name, is_default")
+    .is("deleted_at", null);
+  if (error) throw new Error(`getMyLists failed: ${error.message}`);
+  return (data ?? []).map((r: { id: string; household_id: string | null; name: string; is_default: boolean }) => ({
+    id: r.id, householdId: r.household_id, name: r.name, isDefault: r.is_default,
+  }));
+}

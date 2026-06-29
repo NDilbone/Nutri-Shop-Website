@@ -2,7 +2,8 @@
 "use client";
 import type { ListDb, StoredItem } from "./db";
 import { encryptContent, decryptContent, type ContentFields } from "./crypto";
-import type { ShoppingListItem, Category } from "@/lib/shopping/types";
+import type { Category } from "@/lib/shopping/types";
+import type { DisplayItem } from "./lists";
 
 export type AddInput = {
   name: string;
@@ -85,9 +86,9 @@ export async function deleteLocalItem(db: ListDb, key: CryptoKey, id: string): P
   await mutateContent(db, key, id, (c) => c, nowIso());
 }
 
-export async function clearCheckedLocal(db: ListDb, key: CryptoKey): Promise<void> {
+export async function clearCheckedLocal(db: ListDb, key: CryptoKey, listId: string): Promise<void> {
   // Dexie cannot index null, so full-scan and filter in memory (same as displayItems).
-  const rows = (await db.items.toArray()).filter((r) => r.deletedAt === null);
+  const rows = (await db.items.toArray()).filter((r) => r.deletedAt === null && r.listId === listId);
   for (const row of rows) {
     try {
       const content = await decryptContent(key, row.iv, row.cipher);
@@ -100,14 +101,28 @@ export async function clearCheckedLocal(db: ListDb, key: CryptoKey): Promise<voi
   }
 }
 
-export async function displayItems(db: ListDb, key: CryptoKey): Promise<ShoppingListItem[]> {
+export async function moveLocalItem(db: ListDb, key: CryptoKey, id: string, targetListId: string): Promise<void> {
+  const row = await db.items.get(id);
+  if (!row) return;
+  const content = await decryptContent(key, row.iv, row.cipher);
+  await writeContent(
+    db,
+    key,
+    { id: row.id, listId: targetListId, serverKnown: row.serverKnown, updatedAt: row.updatedAt },
+    content,
+    row.deletedAt,
+  );
+}
+
+export async function displayItems(db: ListDb, key: CryptoKey): Promise<DisplayItem[]> {
   const rows = (await db.items.toArray()).filter((r) => r.deletedAt === null);
-  const out: ShoppingListItem[] = [];
+  const out: DisplayItem[] = [];
   for (const row of rows) {
     try {
       const c = await decryptContent(key, row.iv, row.cipher);
       out.push({
         id: row.id,
+        listId: row.listId,
         name: c.name,
         quantity: c.quantity,
         category: c.category as Category | null,
