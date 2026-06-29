@@ -100,6 +100,34 @@ Do **not** test offline with `pnpm dev` — the SW is disabled in development.
 - Migration `0005` adds the sync RPC and timestamp fields.
 - The `.github/workflows/db-migrate.yml` and `rls.yml` workflows run on migration or DAL changes to keep RLS in sync.
 
+## Household sharing (Phase 6C)
+
+Members can share a shopping list with a household in addition to their personal list.
+
+### Households
+
+- **Create** a household from `/account` → Household → Create. You become the first member.
+- **Invite** by entering a member's email on `/account` → Household → Invite. Invites are in-app only — no email is sent. The invitee sees a pending-invite banner on `/list` and `/account` and can accept or decline there.
+- **Accept / decline** from the banner or from `/account` → Household.
+- **Leave** from `/account` → Household → Leave. The last member to leave dissolves the household.
+
+### List layout
+
+`/list` shows two sections:
+
+- **Personal** — visible only to you; backed by your personal shopping list.
+- **Household · \<name>** — shared with all household members; backed by the household list.
+
+Each section has its own inline add-item form, check-off, and **Clear checked** button. Items can be moved between Personal and Household via the item edit sheet. The Household section appears only when you belong to a household.
+
+### Access and conflict resolution
+
+All members have equal read and write access to the household list. Conflicts resolve by **last-edit-wins** using each client's local edit timestamp. When a remote household change supersedes a local one, the sync status quietly transitions to "Synced" — no intrusive modal or data loss. Offline edits queue and push on reconnect.
+
+### Revocation
+
+When a member leaves (or is the last to leave, dissolving the household), the household list is pruned from their local store on the next sync and the Household section disappears from their `/list`. Queued but unsynced household edits on the departing device are discarded on prune.
+
 ## Admin (Phase 6A)
 
 Invite management lives in-app at `/admin`, gated to admin users (`profiles.is_admin`).
