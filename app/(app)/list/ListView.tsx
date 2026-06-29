@@ -82,7 +82,7 @@ export function ListView() {
         items={personal}
         onAddName={(name) => addTo(getOrInitListId(db), { name, quantity: "", category: "" })}
         onToggle={onToggle}
-        onClear={() => onClear(personalId ?? "")}
+        onClear={() => { if (!personalId) return; void onClear(personalId); }}
         onOpen={setEditing}
       />
 
@@ -106,7 +106,11 @@ export function ListView() {
         onDelete={removeEditing}
         canMove={household !== null}
         moveTargetLabel={editing && editing.listId === household?.id ? "Move to Personal" : "Move to Household"}
-        onMove={editing ? () => onMove(editing.id, editing.listId === household?.id ? (personalId ?? "") : (household?.id ?? "")) : undefined}
+        onMove={editing ? () => {
+          const targetId = editing.listId === household?.id ? (personalId ?? "") : (household?.id ?? "");
+          if (!targetId) return;
+          void onMove(editing.id, targetId);
+        } : undefined}
       />
     </main>
   );

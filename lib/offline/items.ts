@@ -87,12 +87,15 @@ export async function deleteLocalItem(db: ListDb, key: CryptoKey, id: string): P
 }
 
 export async function clearCheckedLocal(db: ListDb, key: CryptoKey, listId: string): Promise<void> {
+  // Dexie cannot index null, so full-scan and filter in memory (same as displayItems).
   const rows = (await db.items.toArray()).filter((r) => r.deletedAt === null && r.listId === listId);
   for (const row of rows) {
     try {
       const content = await decryptContent(key, row.iv, row.cipher);
       if (content.checked) await deleteLocalItem(db, key, row.id);
     } catch {
+      // fail closed (mirror displayItems): drop an undecryptable row so one corrupt
+      // row can't abort "Clear checked". It will be re-pulled on the next sync.
       await db.items.delete(row.id);
     }
   }
@@ -125,7 +128,7 @@ export async function displayItems(db: ListDb, key: CryptoKey): Promise<DisplayI
         category: c.category as Category | null,
         fdcId: c.fdcId,
         checked: c.checked,
-        createdAt: row.editedAt,
+        createdAt: row.editedAt, // local rows order by edit recency; server seeds carry their own
       });
     } catch {
       // fail closed: a row that won't decrypt is dropped and will be re-pulled
