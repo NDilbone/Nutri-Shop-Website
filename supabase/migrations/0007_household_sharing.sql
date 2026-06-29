@@ -108,3 +108,84 @@ create policy "household_invites_select_mine" on public.household_invites
   for select using (
     invitee_user_id = (select auth.uid()) or invited_by = (select auth.uid()) );
 -- No INSERT/UPDATE/DELETE policies for `authenticated` ⇒ writes are RPC-only (Task 3).
+
+-- ============ lifecycle RPCs (self-gating SECURITY DEFINER, the 0006 admin_* pattern) ============
+
+create or replace function public.create_household(p_name text)
+returns uuid language plpgsql security definer set search_path = '' as $$
+declare v_uid uuid := (select auth.uid()); v_hh uuid;
+begin
+  if v_uid is null then raise exception 'forbidden' using errcode = 'insufficient_privilege'; end if;
+  if exists (select 1 from public.household_members where user_id = v_uid) then
+    raise exception 'already in a household' using errcode = 'insufficient_privilege';
+  end if;
+  insert into public.households (name, created_by) values (trim(p_name), v_uid) returning id into v_hh;
+  insert into public.household_members (household_id, user_id) values (v_hh, v_uid);
+  insert into public.shopping_lists (owner_id, is_default, household_id, name)
+    values (v_uid, false, v_hh, 'Household list');
+  return v_hh;
+end;
+$$;
+
+create or replace function public.invite_to_household(p_email text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  v_uid    uuid := (select auth.uid());
+  v_hh     uuid;
+  v_target uuid;
+begin
+  select household_id into v_hh from public.household_members where user_id = v_uid;
+  if v_hh is null then raise exception 'forbidden' using errcode = 'insufficient_privilege'; end if;
+
+  select id into v_target from auth.users where lower(email) = lower(trim(p_email));
+  -- Silent no-op on every ineligible case — no account-enumeration oracle.
+  if v_target is null then return; end if;
+  if exists (select 1 from public.household_members where user_id = v_target) then return; end if;
+  if exists (select 1 from public.household_invites
+             where household_id = v_hh and invitee_user_id = v_target and status = 'pending') then
+    return;
+  end if;
+
+  insert into public.household_invites (household_id, invitee_user_id, invited_by)
+    values (v_hh, v_target, v_uid);
+end;
+$$;
+
+create or replace function public.respond_to_invite(p_invite_id uuid, p_accept boolean)
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_uid uuid := (select auth.uid()); v_hh uuid;
+begin
+  select household_id into v_hh from public.household_invites
+    where id = p_invite_id and invitee_user_id = v_uid and status = 'pending';
+  if v_hh is null then raise exception 'forbidden' using errcode = 'insufficient_privilege'; end if;
+
+  if p_accept then
+    if exists (select 1 from public.household_members where user_id = v_uid) then
+      raise exception 'already in a household' using errcode = 'insufficient_privilege';
+    end if;
+    insert into public.household_members (household_id, user_id) values (v_hh, v_uid);
+    update public.household_invites set status = 'accepted' where id = p_invite_id;
+  else
+    update public.household_invites set status = 'declined' where id = p_invite_id;
+  end if;
+end;
+$$;
+
+create or replace function public.leave_household()
+returns void language plpgsql security definer set search_path = '' as $$
+declare v_uid uuid := (select auth.uid()); v_hh uuid; v_left int;
+begin
+  select household_id into v_hh from public.household_members where user_id = v_uid;
+  if v_hh is null then raise exception 'forbidden' using errcode = 'insufficient_privilege'; end if;
+  delete from public.household_members where household_id = v_hh and user_id = v_uid;
+  select count(*) into v_left from public.household_members where household_id = v_hh;
+  if v_left = 0 then
+    delete from public.households where id = v_hh;  -- cascades shared list + items + invites
+  end if;
+end;
+$$;
+
+grant execute on function public.create_household(text)            to authenticated;
+grant execute on function public.invite_to_household(text)         to authenticated;
+grant execute on function public.respond_to_invite(uuid, boolean)  to authenticated;
+grant execute on function public.leave_household()                 to authenticated;

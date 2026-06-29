@@ -86,3 +86,74 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("household sharing — access RLS", () =
     expect(data).toHaveLength(0);
   });
 });
+
+describe.skipIf(!HAS_SUPABASE_TEST_ENV)("household sharing — lifecycle RPCs", () => {
+  let uA: SupabaseClient, uB: SupabaseClient, uC: SupabaseClient;
+  let bEmail: string, cEmail: string, hhId: string, listId: string;
+
+  beforeAll(async () => {
+    bEmail = "life-b@example.com"; cEmail = "life-c@example.com";
+    uA = await makeUser("life-a@example.com", "LifeA-pw-1234!");
+    uB = await makeUser(bEmail, "LifeB-pw-1234!");
+    uC = await makeUser(cEmail, "LifeC-pw-1234!");
+  });
+
+  it("create_household creates a household, membership, and exactly one shared list", async () => {
+    const { data, error } = await uA.rpc("create_household", { p_name: "Lifecycle home" });
+    expect(error).toBeNull();
+    hhId = data as string;
+    const { data: list } = await uA.from("shopping_lists").select("id, household_id").eq("household_id", hhId);
+    expect(list).toHaveLength(1);
+    listId = list![0]!.id;
+  });
+
+  it("create_household a second time for the same user fails closed", async () => {
+    const { error } = await uA.rpc("create_household", { p_name: "Second" });
+    expect(error).not.toBeNull();
+  });
+
+  it("invite_to_household for an unknown email is a silent no-op (no error, no invite)", async () => {
+    const { error } = await uA.rpc("invite_to_household", { p_email: "nobody@example.com" });
+    expect(error).toBeNull();
+    const { data } = await admin().from("household_invites").select("id").eq("household_id", hhId);
+    expect(data).toHaveLength(0);
+  });
+
+  it("invite_to_household creates exactly one pending invite for an eligible user; repeat is idempotent", async () => {
+    expect((await uA.rpc("invite_to_household", { p_email: bEmail })).error).toBeNull();
+    expect((await uA.rpc("invite_to_household", { p_email: bEmail })).error).toBeNull();
+    const { data } = await admin().from("household_invites").select("id, status").eq("household_id", hhId);
+    expect(data).toHaveLength(1);
+    expect(data![0]!.status).toBe("pending");
+  });
+
+  it("a non-member cannot invite", async () => {
+    const { error } = await uC.rpc("invite_to_household", { p_email: bEmail });
+    expect(error).not.toBeNull(); // uC is in no household
+  });
+
+  it("invitee B sees the pending invite and accepts; B becomes a member and can use the shared list", async () => {
+    const { data: invites } = await uB.from("household_invites").select("id").eq("invitee_user_id",
+      (await uB.auth.getUser()).data.user!.id);
+    expect(invites!.length).toBe(1);
+    const { error } = await uB.rpc("respond_to_invite", { p_invite_id: invites![0]!.id, p_accept: true });
+    expect(error).toBeNull();
+    const { error: insErr } = await uB.from("shopping_list_items").insert({ list_id: listId, name: "B joined item" });
+    expect(insErr).toBeNull();
+  });
+
+  it("after B leaves, B can no longer read or write the shared list", async () => {
+    expect((await uB.rpc("leave_household")).error).toBeNull();
+    expect((await uB.from("shopping_lists").select("id").eq("id", listId)).data).toHaveLength(0);
+    const { error } = await uB.from("shopping_list_items").insert({ list_id: listId, name: "after leave" });
+    expect(error).not.toBeNull();
+  });
+
+  it("when the last member (A) leaves, the household and its shared list are deleted", async () => {
+    expect((await uA.rpc("leave_household")).error).toBeNull();
+    const { data } = await admin().from("households").select("id").eq("id", hhId);
+    expect(data).toHaveLength(0);
+    const { data: list } = await admin().from("shopping_lists").select("id").eq("household_id", hhId);
+    expect(list).toHaveLength(0);
+  });
+});
