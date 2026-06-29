@@ -26,8 +26,13 @@ export async function syncShoppingList(
   const knownIds = new Set(lists.map((l) => l.id));
 
   if (input.dirtyItems.length > 0) {
-    // Pass real personal/household ids through; rewrite only client-minted placeholders.
-    const items = remapUnknownListIds(input.dirtyItems, knownIds, personalListId);
+    // Only a true bootstrap (brand-new client, empty local lists store) may remap an
+    // unknown placeholder to the personal list. Otherwise DROP dirty items whose list is
+    // no longer accessible (a just-revoked household list) — remapping would leak them to
+    // personal, and pushing them would RLS-abort the whole batch.
+    const items = input.bootstrap
+      ? remapUnknownListIds(input.dirtyItems, knownIds, personalListId)
+      : input.dirtyItems.filter((i) => knownIds.has(i.list_id));
     const supabase = await createClient();
     const { error } = await supabase.rpc("sync_shopping_items", { p_items: items });
     if (error) throw new Error("sync push failed");

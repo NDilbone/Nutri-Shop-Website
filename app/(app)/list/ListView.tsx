@@ -80,7 +80,7 @@ export function ListView() {
       <ListSection
         title="Personal"
         items={personal}
-        onAddName={(name) => addTo(getOrInitListId(db), { name, quantity: "", category: "" })}
+        onAddName={(name) => addTo(personalId ?? getOrInitListId(db), { name, quantity: "", category: "" })}
         onToggle={onToggle}
         onClear={() => { if (!personalId) return; void onClear(personalId); }}
         onOpen={setEditing}

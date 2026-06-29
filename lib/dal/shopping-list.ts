@@ -143,6 +143,21 @@ export type ServerItemRow = {
  * deleted rows propagate to offline clients during sync).
  * RLS scopes results to lists owned by the calling user.
  */
+export async function getChangesSince(
+  cursor: string,
+): Promise<{ items: ServerItemRow[]; cursor: string }> {
+  await requireUser(); // re-verify at the data boundary
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("shopping_list_items")
+    .select("id, list_id, name, quantity, category, fdc_id, checked, deleted_at, edited_at, updated_at")
+    .gt("updated_at", cursor)
+    .order("updated_at", { ascending: true });
+  if (error) throw error;
+  const items = (data ?? []) as ServerItemRow[];
+  return { items, cursor: nextCursor(items.map((r) => r.updated_at), cursor) };
+}
+
 export type ListMeta = { id: string; householdId: string | null; name: string; isDefault: boolean };
 
 /** Every list the caller can access (personal default + the household shared list, if a
@@ -158,19 +173,4 @@ export async function getMyLists(): Promise<ListMeta[]> {
   return (data ?? []).map((r: { id: string; household_id: string | null; name: string; is_default: boolean }) => ({
     id: r.id, householdId: r.household_id, name: r.name, isDefault: r.is_default,
   }));
-}
-
-export async function getChangesSince(
-  cursor: string,
-): Promise<{ items: ServerItemRow[]; cursor: string }> {
-  await requireUser(); // re-verify at the data boundary
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("shopping_list_items")
-    .select("id, list_id, name, quantity, category, fdc_id, checked, deleted_at, edited_at, updated_at")
-    .gt("updated_at", cursor)
-    .order("updated_at", { ascending: true });
-  if (error) throw error;
-  const items = (data ?? []) as ServerItemRow[];
-  return { items, cursor: nextCursor(items.map((r) => r.updated_at), cursor) };
 }

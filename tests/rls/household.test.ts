@@ -85,6 +85,24 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("household sharing — access RLS", () =
     const { data } = await userC.from("shopping_list_items").select("id").eq("list_id", pl!.id);
     expect(data).toHaveLength(0);
   });
+
+  it("a member (B) can UPDATE and soft-DELETE items on the shared list (T2 matrix)", async () => {
+    const ins = await userB.from("shopping_list_items")
+      .insert({ list_id: sharedListId, name: "B editable" }).select("id").single();
+    expect(ins.error).toBeNull();
+    expect(ins.data).not.toBeNull();
+    const itemId = ins.data!.id;
+
+    const upd = await userB.from("shopping_list_items")
+      .update({ name: "B edited" }).eq("id", itemId).select();
+    expect(upd.error).toBeNull();
+    expect(upd.data ?? []).toHaveLength(1);
+
+    const del = await userB.from("shopping_list_items")
+      .update({ deleted_at: new Date().toISOString() }).eq("id", itemId).select();
+    expect(del.error).toBeNull();
+    expect(del.data ?? []).toHaveLength(1);
+  });
 });
 
 describe.skipIf(!HAS_SUPABASE_TEST_ENV)("household sharing — lifecycle RPCs", () => {
@@ -155,5 +173,73 @@ describe.skipIf(!HAS_SUPABASE_TEST_ENV)("household sharing — lifecycle RPCs", 
     expect(data).toHaveLength(0);
     const { data: list } = await admin().from("shopping_lists").select("id").eq("household_id", hhId);
     expect(list).toHaveLength(0);
+  });
+});
+
+describe.skipIf(!HAS_SUPABASE_TEST_ENV)("household sharing — creator leaves while a member remains", () => {
+  let uA: SupabaseClient, uB: SupabaseClient;
+  let creatorId: string, memberId: string;
+  let hhId: string, listId: string, seededItemId: string;
+
+  beforeAll(async () => {
+    uA = await makeUser("leave-a@example.com", "LeaveA-pw-1234!");
+    uB = await makeUser("leave-b@example.com", "LeaveB-pw-1234!");
+    creatorId = (await uA.auth.getUser()).data.user!.id;
+    memberId = (await uB.auth.getUser()).data.user!.id;
+
+    // A creates the household → A is the shared list's owner_id and first member.
+    const { data: hh, error: hhErr } = await uA.rpc("create_household", { p_name: "Creator-leave home" });
+    expect(hhErr).toBeNull();
+    hhId = hh as string;
+
+    const { data: lists } = await admin().from("shopping_lists").select("id, owner_id").eq("household_id", hhId);
+    expect(lists).toHaveLength(1);
+    listId = lists![0]!.id;
+    expect(lists![0]!.owner_id).toBe(creatorId);
+
+    // Add B as a second member (service-role seed, mirroring the access-RLS suite).
+    const { error: mErr } = await admin().from("household_members").insert({ household_id: hhId, user_id: memberId });
+    expect(mErr).toBeNull();
+
+    // B (member) seeds an item so A's post-leave write attempts have a target row.
+    const seeded = await uB.from("shopping_list_items").insert({ list_id: listId, name: "B before leave" }).select("id").single();
+    expect(seeded.error).toBeNull();
+    expect(seeded.data).not.toBeNull();
+    seededItemId = seeded.data!.id;
+
+    // A (creator) leaves while B remains → access must be revoked and ownership reassigned.
+    expect((await uA.rpc("leave_household")).error).toBeNull();
+  });
+
+  it("the departed creator (A) can no longer read the shared list", async () => {
+    const { data } = await uA.from("shopping_lists").select("id").eq("id", listId);
+    expect(data ?? []).toHaveLength(0);
+  });
+
+  it("the departed creator (A) can no longer read the shared items", async () => {
+    const { data } = await uA.from("shopping_list_items").select("id").eq("list_id", listId);
+    expect(data ?? []).toHaveLength(0);
+  });
+
+  it("the departed creator (A) can no longer insert, update, or delete shared items", async () => {
+    const ins = await uA.from("shopping_list_items").insert({ list_id: listId, name: "A after leave" });
+    expect(ins.error).not.toBeNull();
+    const upd = await uA.from("shopping_list_items").update({ name: "A edit" }).eq("id", seededItemId).select();
+    expect(upd.data ?? []).toHaveLength(0); // RLS denies silently
+    const del = await uA.from("shopping_list_items").delete().eq("id", seededItemId).select();
+    expect(del.data ?? []).toHaveLength(0);
+  });
+
+  it("the remaining member (B) can still read and write shared items", async () => {
+    const { data: read } = await uB.from("shopping_list_items").select("id").eq("list_id", listId).is("deleted_at", null);
+    expect((read ?? []).length).toBeGreaterThanOrEqual(1);
+    const { error: insErr } = await uB.from("shopping_list_items").insert({ list_id: listId, name: "B still writes" });
+    expect(insErr).toBeNull();
+  });
+
+  it("ownership of the shared list is reassigned to the remaining member (B)", async () => {
+    const { data } = await admin().from("shopping_lists").select("owner_id").eq("id", listId);
+    expect(data).toHaveLength(1);
+    expect(data![0]!.owner_id).toBe(memberId);
   });
 });

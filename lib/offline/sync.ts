@@ -5,7 +5,7 @@ import { EPOCH_CURSOR, upsertLocalLists, readLocalLists, deleteListAndItems } fr
 import { decryptContent, encryptContent } from "./crypto";
 import { toServerItem } from "./payload";
 import { reconcile } from "./reconcile";
-import { toLocalListMeta, accessibleListIds, listsToPrune, partitionPushable } from "./lists";
+import { toLocalListMeta, accessibleListIds, listsToPrune, partitionPushable, personalListId } from "./lists";
 import { syncShoppingList } from "@/app/(app)/list/actions";
 import type { ServerItemRow } from "@/lib/dal/shopping-list";
 
@@ -27,11 +27,12 @@ export async function runSync(db: ListDb, key: CryptoKey): Promise<void> {
     //    A list we lost access to (left/removed) must not poison the push batch — its
     //    dirty rows are dropped here and pruned below.
     const accessibleLocal = accessibleListIds(await readLocalLists(db));
+    const bootstrap = accessibleLocal.size === 0;
     const dirtyAll = await db.items.where("dirty").equals(1).toArray();
     // On a brand-new client the lists store is empty (no sync yet); allow all so the
     // first push still works (the server remaps a placeholder id to the personal list).
     const { push: dirty } =
-      accessibleLocal.size === 0
+      bootstrap
         ? { push: dirtyAll }
         : partitionPushable(dirtyAll.map((r) => ({ ...r, listId: r.listId })), accessibleLocal);
 
@@ -47,12 +48,18 @@ export async function runSync(db: ListDb, key: CryptoKey): Promise<void> {
 
     // 2. Push + pull + accessible lists in one round trip.
     const cursor = await readCursor(db);
-    const result = await syncShoppingList({ dirtyItems, cursor });
+    const result = await syncShoppingList({ dirtyItems, cursor, bootstrap });
 
     // 3. Persist the accessible lists, then prune any local list (and its items) no
     //    longer returned — this is how leave/remove clears a device.
     const localMeta = toLocalListMeta(result.lists);
     await upsertLocalLists(db, localMeta);
+    // Converge meta.defaultListId onto the real personal list id (replaces the removed
+    // Phase-5 items[0] convergence). Keyed to the PERSONAL list specifically, so
+    // getOrInitListId() and the personal add target resolve to the server's real id and
+    // post-first-sync personal adds are never stranded under a placeholder id.
+    const personalId = personalListId(localMeta);
+    if (personalId) await db.meta.put({ key: "defaultListId", value: personalId });
     const accessibleServer = accessibleListIds(result.lists);
     const localIds = (await readLocalLists(db)).map((l) => l.id);
     for (const goneId of listsToPrune(localIds, accessibleServer)) {

@@ -62,8 +62,8 @@ returns boolean language sql security definer set search_path = '' stable as $$
   select exists (
     select 1 from public.shopping_lists l
     where l.id = p_list_id and l.deleted_at is null and (
-      l.owner_id = (select auth.uid())
-      or public.is_household_member(l.household_id)
+      (l.household_id is null and l.owner_id = (select auth.uid()))
+      or (l.household_id is not null and public.is_household_member(l.household_id))
     )
   );
 $$;
@@ -90,7 +90,7 @@ create policy "shopping_list_items_delete_member" on public.shopping_list_items
 -- ============ broaden shopping_lists SELECT only; writes stay owner-only ============
 drop policy "shopping_lists_select_own" on public.shopping_lists;
 create policy "shopping_lists_select_accessible" on public.shopping_lists
-  for select using ( (select auth.uid()) = owner_id or public.can_access_list(id) );
+  for select using ( public.can_access_list(id) );
 -- insert/update/delete policies from 0004 are unchanged (owner-only).
 
 -- ============ household-table RLS: SELECT-only, recursion-safe via the helper ============
@@ -173,7 +173,7 @@ $$;
 
 create or replace function public.leave_household()
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_uid uuid := (select auth.uid()); v_hh uuid; v_left int;
+declare v_uid uuid := (select auth.uid()); v_hh uuid; v_left bigint;
 begin
   select household_id into v_hh from public.household_members where user_id = v_uid;
   if v_hh is null then raise exception 'forbidden' using errcode = 'insufficient_privilege'; end if;
@@ -181,6 +181,11 @@ begin
   select count(*) into v_left from public.household_members where household_id = v_hh;
   if v_left = 0 then
     delete from public.households where id = v_hh;  -- cascades shared list + items + invites
+  else
+    update public.shopping_lists
+      set owner_id = (select user_id from public.household_members
+                      where household_id = v_hh order by joined_at limit 1)
+      where household_id = v_hh and owner_id = v_uid;
   end if;
 end;
 $$;

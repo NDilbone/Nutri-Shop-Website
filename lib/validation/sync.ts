@@ -18,6 +18,7 @@ export const syncItemSchema = z.object({
 export const syncInputSchema = z.object({
   dirtyItems: z.array(syncItemSchema).max(500),
   cursor: iso,
+  bootstrap: z.boolean().default(false),
 });
 
 export type SyncInput = z.infer<typeof syncInputSchema>;
