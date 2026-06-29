@@ -1,10 +1,11 @@
 // lib/offline/sync.ts
 "use client";
 import type { ListDb, StoredItem } from "./db";
-import { EPOCH_CURSOR } from "./db";
+import { EPOCH_CURSOR, upsertLocalLists, readLocalLists, deleteListAndItems } from "./db";
 import { decryptContent, encryptContent } from "./crypto";
 import { toServerItem } from "./payload";
 import { reconcile } from "./reconcile";
+import { toLocalListMeta, accessibleListIds, listsToPrune, partitionPushable } from "./lists";
 import { syncShoppingList } from "@/app/(app)/list/actions";
 import type { ServerItemRow } from "@/lib/dal/shopping-list";
 
@@ -22,8 +23,18 @@ export async function runSync(db: ListDb, key: CryptoKey): Promise<void> {
   if (inFlight) return;
   inFlight = true;
   try {
-    // 1. Collect + decrypt dirty rows.
-    const dirty = await db.items.where("dirty").equals(1).toArray();
+    // 1. Collect + decrypt dirty rows, but only those whose list is still accessible.
+    //    A list we lost access to (left/removed) must not poison the push batch — its
+    //    dirty rows are dropped here and pruned below.
+    const accessibleLocal = accessibleListIds(await readLocalLists(db));
+    const dirtyAll = await db.items.where("dirty").equals(1).toArray();
+    // On a brand-new client the lists store is empty (no sync yet); allow all so the
+    // first push still works (the server remaps a placeholder id to the personal list).
+    const { push: dirty } =
+      accessibleLocal.size === 0
+        ? { push: dirtyAll }
+        : partitionPushable(dirtyAll.map((r) => ({ ...r, listId: r.listId })), accessibleLocal);
+
     const dirtyItems = await Promise.all(
       dirty.map(async (r) => {
         const c = await decryptContent(key, r.iv, r.cipher);
@@ -34,17 +45,23 @@ export async function runSync(db: ListDb, key: CryptoKey): Promise<void> {
       }),
     );
 
-    // 2. Push + pull in one round trip.
+    // 2. Push + pull + accessible lists in one round trip.
     const cursor = await readCursor(db);
     const result = await syncShoppingList({ dirtyItems, cursor });
 
-    // 3. Clear dirty on pushed rows — but ONLY if the row has not been edited
-    //    again locally since we snapshotted it (editedAt unchanged). A row edited
-    //    mid-sync stays dirty and re-pushes next run. This must NOT rely on the
-    //    pulled echo to clear dirty: the echo carries the same edited_at we pushed,
-    //    so reconcile() (strict >) would return "keep-local" and dirty would never
-    //    clear. Clearing dirty here flips reconcile to the "overwrite" branch so
-    //    the echo can stamp the server updated_at onto the row.
+    // 3. Persist the accessible lists, then prune any local list (and its items) no
+    //    longer returned — this is how leave/remove clears a device.
+    const localMeta = toLocalListMeta(result.lists);
+    await upsertLocalLists(db, localMeta);
+    const accessibleServer = accessibleListIds(result.lists);
+    const localIds = (await readLocalLists(db)).map((l) => l.id);
+    for (const goneId of listsToPrune(localIds, accessibleServer)) {
+      await deleteListAndItems(db, goneId);
+    }
+
+    // 4. Clear dirty on pushed rows whose editedAt is unchanged since the snapshot
+    //    (Phase-5 invariant — flips reconcile to "overwrite" so the echo can stamp
+    //    the server updated_at). Rows dropped in step 1 are skipped naturally.
     await db.transaction("rw", db.items, async () => {
       for (const r of dirty) {
         const cur = await db.items.get(r.id);
@@ -54,11 +71,10 @@ export async function runSync(db: ListDb, key: CryptoKey): Promise<void> {
       }
     });
 
-    // 4. Reconcile pulled rows (incl. the echo of just-pushed rows — now dirty:0,
-    //    so reconcile overwrites them with the server-stamped updated_at).
+    // 5. Reconcile pulled rows (incl. the echo of just-pushed rows).
     await applyServerChanges(db, key, result.items);
 
-    // 5. Advance cursor.
+    // 6. Advance cursor.
     await db.meta.put({ key: "pullCursor", value: result.cursor });
   } finally {
     inFlight = false;
@@ -82,14 +98,7 @@ async function applyServerChanges(db: ListDb, key: CryptoKey, items: ServerItemR
     };
     await db.items.put(row);
   }
-
-  // Converge meta.defaultListId onto the server's real default list id once items
-  // are known (replaces any client-minted offline id from getOrInitListId). All of
-  // a user's items share the single default list, so this is a stable no-op once
-  // converged — it must run unconditionally, not only when nothing is stored yet,
-  // or a once-minted offline id stays sticky and never converges.
-  const first = items[0];
-  if (first !== undefined) {
-    await db.meta.put({ key: "defaultListId", value: first.list_id });
-  }
+  // NOTE: the Phase-5 `meta.defaultListId = items[0].list_id` convergence is removed —
+  // the lists store (step 3) is now the source of truth for list ids, and items[0] may
+  // belong to the shared list, which would have mis-set the personal default.
 }
