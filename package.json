@@ -37,7 +37,7 @@
     "eslint-config-next": "16.2.9",
     "otplib": "13.4.1",
     "sharp": "0.35.2",
-    "tailwindcss": "4.3.1",
+    "tailwindcss": "4.3.2",
     "typescript": "6.0.3",
     "vite-tsconfig-paths": "6.1.1",
     "vitest": "4.1.9"
